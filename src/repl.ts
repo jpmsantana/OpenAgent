@@ -47,22 +47,59 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     prompt: "> ",
   });
   const messages: ChatMessage[] = [];
+  const chat: { abort?: AbortController } = {};
+  let quitting = false;
+
+  function quit(): void {
+    if (quitting) {
+      return;
+    }
+    quitting = true;
+    chat.abort?.abort();
+    deps.output.write("\n");
+    rl.close();
+  }
+
+  process.on("SIGINT", quit);
+  rl.on("SIGINT", quit);
 
   try {
     let open = true;
     rl.on("close", () => {
       open = false;
+      chat.abort?.abort();
     });
     rl.prompt();
     for await (const line of rl) {
-      currentModel = await handleLine(deps, line, messages, currentModel);
-      if (open) {
+      if (quitting) {
+        break;
+      }
+      currentModel = await handleLine(
+        deps,
+        line,
+        messages,
+        currentModel,
+        chat,
+        quit,
+      );
+      if (open && !quitting) {
         rl.prompt();
       }
     }
   } finally {
+    process.off("SIGINT", quit);
+    rl.removeListener("SIGINT", quit);
     rl.close();
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "name" in err &&
+    (err as { name: string }).name === "AbortError"
+  );
 }
 
 async function handleLine(
@@ -70,6 +107,8 @@ async function handleLine(
   line: string,
   messages: ChatMessage[],
   currentModel: string | undefined,
+  chat: { abort?: AbortController },
+  quit: () => void,
 ): Promise<string | undefined> {
   const trimmed = line.trim();
   if (trimmed === "") {
@@ -85,7 +124,7 @@ async function handleLine(
       case "model":
         return handleModel(deps, currentModel, command.name);
       case "exit":
-        deps.output.write("Not implemented yet.\n");
+        quit();
         return currentModel;
       case "unknown":
         deps.output.write(
@@ -101,11 +140,14 @@ async function handleLine(
   }
 
   messages.push({ role: "user", content: trimmed });
+  const abort = new AbortController();
+  chat.abort = abort;
   let fullText = "";
   try {
     for await (const chunk of deps.chatStream(deps.host, {
       model: currentModel,
       messages,
+      signal: abort.signal,
     })) {
       deps.output.write(chunk);
       fullText += chunk;
@@ -115,11 +157,16 @@ async function handleLine(
       messages.push({ role: "assistant", content: fullText });
     }
   } catch (err) {
+    if (isAbortError(err) || abort.signal.aborted) {
+      return currentModel;
+    }
     if (err instanceof OllamaError) {
       process.stderr.write(`Error: ${err.message}\n`);
       return currentModel;
     }
     throw err;
+  } finally {
+    chat.abort = undefined;
   }
   return currentModel;
 }
