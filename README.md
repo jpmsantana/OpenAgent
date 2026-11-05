@@ -18,7 +18,7 @@ TypeScript on Node.js 22+. Docker Compose is the OS-agnostic way to run the CLI 
 
 ## Status
 
-The repo has a TypeScript CLI stub and a Docker run path. Chat against local Ollama is not implemented yet.
+The repo has a TypeScript CLI that chats with local Ollama. `/model` and `/exit` are still placeholders.
 
 ## Development
 
@@ -43,7 +43,7 @@ docker compose run --rm -T openagent npm run lint
 docker compose run --rm -T openagent npm test
 ```
 
-`npm start` / `docker compose run --rm openagent` currently print a stub line and exit. The interactive REPL lands in later issues.
+`npm start` / `docker compose run --rm openagent` enter the chat REPL (Ollama must be running on the host).
 
 ## License
 
