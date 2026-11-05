@@ -41,8 +41,8 @@ jobs:
       - run: docker compose build
       - run: docker compose run --rm -T openagent npm run lint
       - run: docker compose run --rm -T openagent npm test
-      - name: Run stub CLI
+      - name: Run CLI help
         run: |
-          output=$(docker compose run --rm -T openagent)
+          output=$(docker compose run --rm -T openagent npm start -- --help)
           printf '%s\n' "$output"
-          printf '%s\n' "$output" | grep -F "OpenAgent CLI stub. Chat REPL is not implemented yet."
+          printf '%s\n' "$output" | grep -F "Usage:"
