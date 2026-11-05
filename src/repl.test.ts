@@ -40,7 +40,13 @@ async function run(
   return { stdout: text(), calls };
 }
 
-describe("runRepl", () => {
+function hang(line: string): Readable {
+  const stream = new Readable({ read() {} });
+  stream.push(`${line}\n`);
+  return stream;
+}
+
+describe("runRepl", { concurrency: 1 }, () => {
   it("streams chat chunks to stdout", async () => {
     const { stdout } = await run(["hello"]);
     assert.match(stdout, /OpenAgent {2}\(ollama \/ m\)/);
@@ -150,6 +156,73 @@ describe("runRepl", () => {
     assert.match(stdout, /Current: \(none\)/);
     assert.match(stdout, /No models found on Ollama at http:\/\/127\.0\.0\.1:11434/);
     assert.match(stdout, /ollama pull <name>/);
+  });
+
+  it("/exit resolves without calling chatStream", { timeout: 3000 }, async () => {
+    const stream = hang("/exit");
+    const { output } = collect();
+    let calls = 0;
+    try {
+      await runRepl({
+        input: stream,
+        output,
+        host: "http://127.0.0.1:11434",
+        listModels: async () => ["m"],
+        chatStream: async function* () {
+          calls += 1;
+          yield "";
+        },
+      });
+      assert.equal(calls, 0);
+    } finally {
+      stream.destroy();
+    }
+  });
+
+  it("SIGINT aborts in-flight chat and runRepl resolves", { timeout: 3000 }, async () => {
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let seenAbort = false;
+    const stream = hang("hello");
+    const { output } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: async function* (_host, args) {
+        await new Promise<void>((_resolve, reject) => {
+          const signal = args.signal;
+          if (signal === undefined) {
+            reject(new Error("missing signal"));
+            return;
+          }
+          const fail = (): void => {
+            seenAbort = true;
+            const err = new Error("aborted");
+            err.name = "AbortError";
+            reject(err);
+          };
+          if (signal.aborted) {
+            fail();
+            return;
+          }
+          signal.addEventListener("abort", fail, { once: true });
+          release();
+        });
+        yield "";
+      },
+    });
+    try {
+      await started;
+      process.emit("SIGINT");
+      await done;
+      assert.equal(seenAbort, true);
+    } finally {
+      stream.destroy();
+    }
   });
 
   it("/model stays in the REPL when listModels throws", async () => {
