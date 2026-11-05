@@ -18,7 +18,7 @@ TypeScript on Node.js 22+. Docker Compose is the OS-agnostic way to run the CLI 
 
 ## Status
 
-The repo has a TypeScript CLI that chats with local Ollama. `/model` and `/exit` are still placeholders.
+The repo has a TypeScript CLI that chats with local Ollama. `/model` lists and selects a session model from Ollama. `/exit` is still a placeholder.
 
 ## Development
 

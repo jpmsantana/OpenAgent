@@ -55,7 +55,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     });
     rl.prompt();
     for await (const line of rl) {
-      await handleLine(deps, line, messages, currentModel);
+      currentModel = await handleLine(deps, line, messages, currentModel);
       if (open) {
         rl.prompt();
       }
@@ -70,10 +70,10 @@ async function handleLine(
   line: string,
   messages: ChatMessage[],
   currentModel: string | undefined,
-): Promise<void> {
+): Promise<string | undefined> {
   const trimmed = line.trim();
   if (trimmed === "") {
-    return;
+    return currentModel;
   }
 
   const command = parseCommand(trimmed);
@@ -81,22 +81,23 @@ async function handleLine(
     switch (command.type) {
       case "help":
         deps.output.write(HELP_TEXT);
-        return;
+        return currentModel;
       case "model":
+        return handleModel(deps, currentModel, command.name);
       case "exit":
         deps.output.write("Not implemented yet.\n");
-        return;
+        return currentModel;
       case "unknown":
         deps.output.write(
           `Unknown command: ${command.raw}. Type /help for commands.\n`,
         );
-        return;
+        return currentModel;
     }
   }
 
   if (currentModel === undefined) {
     deps.output.write("No model selected. Use /model to choose.\n");
-    return;
+    return currentModel;
   }
 
   messages.push({ role: "user", content: trimmed });
@@ -116,8 +117,48 @@ async function handleLine(
   } catch (err) {
     if (err instanceof OllamaError) {
       process.stderr.write(`Error: ${err.message}\n`);
-      return;
+      return currentModel;
     }
     throw err;
   }
+  return currentModel;
+}
+
+async function handleModel(
+  deps: ReplDeps,
+  currentModel: string | undefined,
+  name?: string,
+): Promise<string | undefined> {
+  let models: string[];
+  try {
+    models = await deps.listModels(deps.host);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`Error: ${message}\n`);
+    return currentModel;
+  }
+
+  if (name !== undefined) {
+    if (models.includes(name)) {
+      deps.output.write(`Model set to ${name}\n`);
+      return name;
+    }
+    process.stderr.write(
+      `Model '${name}' is not available on Ollama. Use /model to list.\n`,
+    );
+    return currentModel;
+  }
+
+  deps.output.write(`Current: ${currentModel ?? "(none)"}\n`);
+  if (models.length === 0) {
+    deps.output.write(`No models found on Ollama at ${deps.host}.\n`);
+    deps.output.write("Pull one with: ollama pull <name>\n");
+    return currentModel;
+  }
+  deps.output.write(`Available from Ollama at ${deps.host}:\n`);
+  for (const model of models) {
+    deps.output.write(`  ${model}\n`);
+  }
+  deps.output.write("Use `/model <name>` to switch.\n");
+  return currentModel;
 }
