@@ -12,38 +12,96 @@ OpenAgent is an open-source agent that can browse the web, search, write program
 - **Permissions** — gated access to tools, files, network, and side effects.
 - **Human supervision** — a person stays in the loop for approval, course-correction, and takeover.
 
-## Stack
-
-TypeScript on Node.js 22+. Docker Compose is the OS-agnostic way to run the CLI when the host Node toolchain is missing or broken. Ollama stays on the host; the image only provides Node.
-
 ## Status
 
-The repo has a TypeScript CLI that chats with local Ollama. `/model` lists and selects a session model from Ollama. `/exit` or Ctrl-C quits.
+M1 is **local Ollama chat only**. The goals above are the product direction; they are not implemented yet.
 
-## Development
+What works now:
 
-Host Node 22+:
+- Interactive chat REPL against local Ollama
+- Config selects the Ollama host; models are discovered from Ollama, not listed in the config file
+- `/model`, `/help`, `/exit`, and Ctrl-C
+- Docker Compose so the CLI does not need a host Node install
+
+## Prerequisites
+
+- **Ollama** running on the host (`ollama serve`) and at least one pulled model, for example `ollama pull qwen2.5-coder:7b`
+- **Either** Node.js 22+ **or** Docker with Compose V2 (`docker compose`). Use Docker when Node is missing or broken.
+
+## Configure
+
+Search order:
+
+1. `$OPENAGENT_CONFIG`
+2. `./openagent.json`
+3. `~/.config/openagent/config.json`
+
+If no file exists, the host default is `http://127.0.0.1:11434`.
+
+For a host Node run, copy `openagent.json.example` to `openagent.json` or to `~/.config/openagent/config.json`:
+
+```json
+{
+  "provider": "ollama",
+  "ollama": {
+    "host": "http://127.0.0.1:11434"
+  },
+  "model": "qwen2.5-coder:7b"
+}
+```
+
+`model` is an optional session default. The config does **not** enumerate models; `/model` asks Ollama.
+
+Docker: `compose.yaml` sets `OPENAGENT_CONFIG=/app/openagent.docker.json` with host `http://host.docker.internal:11434`. Do not use `127.0.0.1` from inside the container. Ollama stays on the host.
+
+## Run (host Node)
 
 ```
 npm install
-npm run lint
-npm test
-npm run build
 npm start
 ```
 
-Pull requests run **lint** and **test** in GitHub Actions. Both must pass.
+## Run (Docker — OS-agnostic)
 
-Docker (no host Node required):
+Ollama still runs on the host. The container only provides Node.
 
 ```
 docker compose build
 docker compose run --rm openagent
-docker compose run --rm -T openagent npm run lint
+```
+
+Tests:
+
+```
 docker compose run --rm -T openagent npm test
 ```
 
-`npm start` / `docker compose run --rm openagent` enter the chat REPL (Ollama must be running on the host).
+The Compose service is interactive (`stdin_open` / `tty`). Use `-T` only for non-interactive commands (CI, tests).
+
+## Commands
+
+| Command | Action |
+| --- | --- |
+| `/help` | List commands |
+| `/model` | List models installed in Ollama |
+| `/model <name>` | Switch model for this session |
+| `/exit` | Quit (Ctrl-C does the same) |
+
+## Develop
+
+```
+npm test
+npm run build
+```
+
+or:
+
+```
+docker compose run --rm -T openagent npm test
+docker compose run --rm -T openagent npm run build
+```
+
+Pull requests run **lint** and **test** in GitHub Actions. Both must pass. Agent and PR rules: [AGENTS.md](AGENTS.md).
 
 ## License
 
