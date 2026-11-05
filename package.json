@@ -1,0 +1,25 @@
+{
+  "name": "openagent",
+  "version": "0.1.0",
+  "description": "Open-source agent that chats, browses, and runs commands under permissions and human supervision",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "openagent": "./dist/index.js"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "test": "node --import tsx --test src/**/*.test.ts",
+    "docker:build": "docker compose build",
+    "docker:start": "docker compose run --rm openagent",
+    "docker:test": "docker compose run --rm -T openagent npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

@@ -14,11 +14,32 @@ OpenAgent is an open-source agent that can browse the web, search, write program
 
 ## Stack
 
-The agent is being built in **TypeScript**.
+TypeScript on Node.js 22+. Docker Compose is the OS-agnostic way to run the CLI when the host Node toolchain is missing or broken. Ollama stays on the host; the image only provides Node.
 
 ## Status
 
-This repository is in the earliest stage of setup. Design, architecture, and implementation notes will land here as the project takes shape.
+The repo has a TypeScript CLI stub and a Docker run path. Chat against local Ollama is not implemented yet.
+
+## Development
+
+Host Node 22+:
+
+```
+npm install
+npm test
+npm run build
+npm start
+```
+
+Docker (no host Node required):
+
+```
+docker compose build
+docker compose run --rm openagent
+docker compose run --rm -T openagent npm test
+```
+
+`npm start` / `docker compose run --rm openagent` currently print a stub line and exit. The interactive REPL lands in later issues.
 
 ## License
 

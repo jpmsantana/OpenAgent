@@ -1,0 +1,6 @@
+{
+  "provider": "ollama",
+  "ollama": {
+    "host": "http://host.docker.internal:11434"
+  }
+}
