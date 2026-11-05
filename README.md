@@ -26,16 +26,20 @@ Host Node 22+:
 
 ```
 npm install
+npm run lint
 npm test
 npm run build
 npm start
 ```
+
+Pull requests run **lint** and **test** in GitHub Actions. Both must pass.
 
 Docker (no host Node required):
 
 ```
 docker compose build
 docker compose run --rm openagent
+docker compose run --rm -T openagent npm run lint
 docker compose run --rm -T openagent npm test
 ```
 

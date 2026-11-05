@@ -12,14 +12,19 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "build": "tsc",
+    "lint": "eslint src --max-warnings 0",
     "test": "node --import tsx --test src/**/*.test.ts",
     "docker:build": "docker compose build",
     "docker:start": "docker compose run --rm openagent",
+    "docker:lint": "docker compose run --rm -T openagent npm run lint",
     "docker:test": "docker compose run --rm -T openagent npm test"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.20.5",
+    "eslint": "^10.14.0",
     "tsx": "^4.23.15",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1"
   }
 }
