@@ -104,4 +104,77 @@ describe("runRepl", () => {
     assert.match(stdout, /No model selected/);
     assert.equal(calls.length, 0);
   });
+
+  it("/model lists current and available names", async () => {
+    const { stdout } = await run(["/model"], {
+      listModels: async () => ["a", "b"],
+    });
+    assert.match(stdout, /Current: a/);
+    assert.match(stdout, /Available from Ollama at http:\/\/127\.0\.0\.1:11434:/);
+    assert.match(stdout, /^ {2}a$/m);
+    assert.match(stdout, /^ {2}b$/m);
+    assert.match(stdout, /Use `\/model <name>` to switch/);
+  });
+
+  it("/model b then a user line chats with b", async () => {
+    const { calls } = await run(["/model b", "hello"], {
+      listModels: async () => ["a", "b"],
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1].model, "b");
+  });
+
+  it("/model nope keeps the previous model", async () => {
+    const writes: string[] = [];
+    const orig = process.stderr.write;
+    process.stderr.write = ((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const { calls } = await run(["/model nope", "hello"], {
+        listModels: async () => ["a", "b"],
+      });
+      assert.match(writes.join(""), /not available/);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0][1].model, "a");
+    } finally {
+      process.stderr.write = orig;
+    }
+  });
+
+  it("/model with an empty list prints no models found", async () => {
+    const { stdout } = await run(["/model"], {
+      listModels: async () => [],
+    });
+    assert.match(stdout, /Current: \(none\)/);
+    assert.match(stdout, /No models found on Ollama at http:\/\/127\.0\.0\.1:11434/);
+    assert.match(stdout, /ollama pull <name>/);
+  });
+
+  it("/model stays in the REPL when listModels throws", async () => {
+    let n = 0;
+    const writes: string[] = [];
+    const orig = process.stderr.write;
+    process.stderr.write = ((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      const { calls } = await run(["/model", "hello"], {
+        listModels: async () => {
+          n += 1;
+          if (n === 1) {
+            return ["a"];
+          }
+          throw new Error("boom");
+        },
+      });
+      assert.match(writes.join(""), /Error: boom/);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0][1].model, "a");
+    } finally {
+      process.stderr.write = orig;
+    }
+  });
 });
