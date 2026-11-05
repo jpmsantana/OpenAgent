@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -7,7 +9,10 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const entry = path.join(root, "src", "index.ts");
 
-function runCli(args: string[]): Promise<{
+function runCli(
+  args: string[],
+  env: NodeJS.ProcessEnv = {},
+): Promise<{
   code: number;
   stdout: string;
   stderr: string;
@@ -15,8 +20,9 @@ function runCli(args: string[]): Promise<{
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["--import", "tsx", entry, ...args], {
       cwd: root,
-      env: process.env,
+      env: { ...process.env, ...env },
     });
+    child.stdin.end();
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -34,16 +40,27 @@ function runCli(args: string[]): Promise<{
   });
 }
 
-describe("openagent CLI stub", () => {
+describe("openagent CLI", () => {
   it("--help exits 0 and prints Usage:", async () => {
     const result = await runCli(["--help"]);
     assert.equal(result.code, 0);
     assert.match(result.stdout, /Usage:/);
   });
 
-  it("default run exits 0 and prints CLI stub", async () => {
-    const result = await runCli([]);
-    assert.equal(result.code, 0);
-    assert.match(result.stdout, /CLI stub/);
+  it("unreachable Ollama at startup exits 1 with serve hint", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oa-cli-"));
+    const configPath = path.join(dir, "openagent.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ ollama: { host: "http://127.0.0.1:1" } }),
+    );
+    try {
+      const result = await runCli([], { OPENAGENT_CONFIG: configPath });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /Cannot reach Ollama/);
+      assert.match(result.stderr, /ollama serve/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

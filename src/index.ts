@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+import { loadConfig } from "./config.js";
+import { chatStream, listModels } from "./ollama.js";
+import { runRepl } from "./repl.js";
+
 export function usage(): string {
   return `openagent — local chat CLI
 
@@ -9,14 +13,26 @@ Usage:
 `;
 }
 
-export function main(argv: string[]): number {
+export async function main(argv: string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(usage());
     return 0;
   }
 
-  process.stdout.write("OpenAgent CLI stub. Chat REPL is not implemented yet.\n");
-  return 0;
+  try {
+    const config = loadConfig();
+    await runRepl({
+      input: process.stdin,
+      output: process.stdout,
+      host: config.ollama.host,
+      initialModel: config.model,
+      listModels,
+      chatStream,
+    });
+    return 0;
+  } catch {
+    return 1;
+  }
 }
 
-process.exit(main(process.argv.slice(2)));
+process.exit(await main(process.argv.slice(2)));
