@@ -27,7 +27,7 @@ async function run(
   const calls: Parameters<ReplDeps["chatStream"]>[] = [];
   const chatStream: ReplDeps["chatStream"] = async function* (host, args) {
     calls.push([host, { ...args, messages: [...args.messages] }]);
-    yield "ok";
+    yield { type: "text", text: "ok" };
   };
   await runRepl({
     input: input(lines),
@@ -170,7 +170,7 @@ describe("runRepl", { concurrency: 1 }, () => {
         listModels: async () => ["m"],
         chatStream: async function* () {
           calls += 1;
-          yield "";
+          yield { type: "text", text: "ok" };
         },
       });
       assert.equal(calls, 0);
@@ -212,7 +212,7 @@ describe("runRepl", { concurrency: 1 }, () => {
           signal.addEventListener("abort", fail, { once: true });
           release();
         });
-        yield "";
+        yield { type: "text", text: "ok" };
       },
     });
     try {

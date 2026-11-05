@@ -2,7 +2,34 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
-import { chatStream, listModels, OllamaError } from "./ollama.ts";
+import {
+  chatStream,
+  listModels,
+  OllamaError,
+  type ChatEvent,
+  type OllamaTool,
+} from "./ollama.ts";
+
+async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString());
+}
+
+const listDirTool: OllamaTool = {
+  type: "function",
+  function: {
+    name: "list_dir",
+    description: "List a directory",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+  },
+};
 
 async function withServer(
   handler: http.RequestListener,
@@ -20,6 +47,10 @@ async function withServer(
       server.close((err) => (err ? reject(err) : resolve()));
     });
   }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function unusedHost(): Promise<string> {
@@ -80,13 +111,166 @@ describe("chatStream", () => {
       res.end();
     }, async (host) => {
       const chunks: string[] = [];
-      for await (const chunk of chatStream(host, {
+      for await (const event of chatStream(host, {
         model: "m",
         messages: [{ role: "user", content: "hi" }],
       })) {
-        chunks.push(chunk);
+        if (event.type === "text") {
+          chunks.push(event.text);
+        }
       }
       assert.equal(chunks.join(""), "Hello");
+    });
+  });
+
+  it("omits tools from the POST body when missing or empty", async () => {
+    const bodies: unknown[] = [];
+    await withServer(async (req, res) => {
+      bodies.push(await readJsonBody(req));
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.end('{"done":true}\n');
+    }, async (host) => {
+      for await (const _ of chatStream(host, { model: "m", messages: [] })) {
+        // drain
+      }
+      for await (const _ of chatStream(host, {
+        model: "m",
+        messages: [],
+        tools: [],
+      })) {
+        // drain
+      }
+    });
+    assert.equal(bodies.length, 2);
+    for (const body of bodies) {
+      assert.equal(isPlainRecord(body) && "tools" in body, false);
+    }
+  });
+
+  it("sends tools on the POST body when the array is non-empty", async () => {
+    let body: unknown;
+    await withServer(async (req, res) => {
+      body = await readJsonBody(req);
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.end('{"done":true}\n');
+    }, async (host) => {
+      for await (const _ of chatStream(host, {
+        model: "m",
+        messages: [],
+        tools: [listDirTool],
+      })) {
+        // drain
+      }
+    });
+    assert.ok(isPlainRecord(body));
+    assert.deepEqual(body.tools, [listDirTool]);
+  });
+
+  it("yields text then tool_calls from successive NDJSON lines", async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.write('{"message":{"role":"assistant","content":"Hi"}}\n');
+      res.write(
+        '{"message":{"role":"assistant","tool_calls":[{"function":{"name":"list_dir","arguments":{"path":"src"}}}]}}\n',
+      );
+      res.write('{"done":true}\n');
+      res.end();
+    }, async (host) => {
+      const events: ChatEvent[] = [];
+      for await (const event of chatStream(host, {
+        model: "m",
+        messages: [],
+      })) {
+        events.push(event);
+      }
+      assert.deepEqual(events, [
+        { type: "text", text: "Hi" },
+        {
+          type: "tool_calls",
+          calls: [
+            { function: { name: "list_dir", arguments: { path: "src" } } },
+          ],
+        },
+      ]);
+    });
+  });
+
+  it("parses tool-call arguments from a JSON string", async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.write(
+        `${JSON.stringify({
+          message: {
+            role: "assistant",
+            tool_calls: [
+              {
+                function: {
+                  name: "list_dir",
+                  arguments: '{"path":"src"}',
+                },
+              },
+            ],
+          },
+        })}\n`,
+      );
+      res.write('{"done":true}\n');
+      res.end();
+    }, async (host) => {
+      const events: ChatEvent[] = [];
+      for await (const event of chatStream(host, {
+        model: "m",
+        messages: [],
+      })) {
+        events.push(event);
+      }
+      assert.deepEqual(events, [
+        {
+          type: "tool_calls",
+          calls: [
+            { function: { name: "list_dir", arguments: { path: "src" } } },
+          ],
+        },
+      ]);
+    });
+  });
+
+  it("serializes tool-role messages with tool_name", async () => {
+    let body: unknown;
+    await withServer(async (req, res) => {
+      body = await readJsonBody(req);
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.end('{"done":true}\n');
+    }, async (host) => {
+      for await (const _ of chatStream(host, {
+        model: "m",
+        messages: [{ role: "tool", content: "ok", tool_name: "list_dir" }],
+      })) {
+        // drain
+      }
+    });
+    assert.ok(isPlainRecord(body));
+    assert.deepEqual(body.messages, [
+      { role: "tool", content: "ok", tool_name: "list_dir" },
+    ]);
+  });
+
+  it("ignores message.thinking and still yields text", async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.write(
+        '{"message":{"role":"assistant","thinking":"plan","content":"Hi"}}\n',
+      );
+      res.write('{"done":true}\n');
+      res.end();
+    }, async (host) => {
+      const events: ChatEvent[] = [];
+      for await (const event of chatStream(host, {
+        model: "m",
+        messages: [],
+      })) {
+        events.push(event);
+      }
+      assert.deepEqual(events, [{ type: "text", text: "Hi" }]);
     });
   });
 

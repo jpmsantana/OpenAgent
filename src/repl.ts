@@ -144,13 +144,15 @@ async function handleLine(
   chat.abort = abort;
   let fullText = "";
   try {
-    for await (const chunk of deps.chatStream(deps.host, {
+    for await (const event of deps.chatStream(deps.host, {
       model: currentModel,
       messages,
       signal: abort.signal,
     })) {
-      deps.output.write(chunk);
-      fullText += chunk;
+      if (event.type === "text") {
+        deps.output.write(event.text);
+        fullText += event.text;
+      }
     }
     deps.output.write("\n");
     if (fullText !== "") {

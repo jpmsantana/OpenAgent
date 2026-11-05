@@ -1,7 +1,33 @@
-export type ChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
+export type ToolCall = {
+  function: {
+    name: string;
+    arguments: Record<string, unknown>;
+  };
 };
+
+export type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  tool_calls?: ToolCall[];
+  tool_name?: string;
+};
+
+export type OllamaTool = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: "object";
+      properties: Record<string, unknown>;
+      required?: string[];
+    };
+  };
+};
+
+export type ChatEvent =
+  | { type: "text"; text: string }
+  | { type: "tool_calls"; calls: ToolCall[] };
 
 export class OllamaError extends Error {
   readonly status?: number;
@@ -26,6 +52,10 @@ function isAbortError(err: unknown): boolean {
   );
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 async function ollamaFetch(
   host: string,
   url: string,
@@ -41,19 +71,77 @@ async function ollamaFetch(
   }
 }
 
-function messageContent(parsed: unknown): string | undefined {
-  if (parsed === null || typeof parsed !== "object") {
-    return undefined;
+function serializeMessage(message: ChatMessage): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    role: message.role,
+    content: message.content,
+  };
+  if (message.tool_calls !== undefined && message.tool_calls.length > 0) {
+    out.tool_calls = message.tool_calls;
   }
-  const message = (parsed as { message?: unknown }).message;
-  if (message === null || typeof message !== "object") {
-    return undefined;
+  if (message.role === "tool" && message.tool_name !== undefined) {
+    out.tool_name = message.tool_name;
   }
-  const content = (message as { content?: unknown }).content;
+  return out;
+}
+
+function parseToolArguments(value: unknown): Record<string, unknown> {
+  if (isPlainObject(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return isPlainObject(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function parseToolCalls(message: Record<string, unknown>): ToolCall[] {
+  const raw = message.tool_calls;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return [];
+  }
+  const calls: ToolCall[] = [];
+  for (const entry of raw) {
+    if (!isPlainObject(entry)) {
+      continue;
+    }
+    const fn = entry.function;
+    if (!isPlainObject(fn) || typeof fn.name !== "string" || fn.name === "") {
+      continue;
+    }
+    calls.push({
+      function: {
+        name: fn.name,
+        arguments: parseToolArguments(fn.arguments),
+      },
+    });
+  }
+  return calls;
+}
+
+function eventsFromParsed(parsed: unknown): ChatEvent[] {
+  if (!isPlainObject(parsed)) {
+    return [];
+  }
+  const message = parsed.message;
+  if (!isPlainObject(message)) {
+    return [];
+  }
+  const events: ChatEvent[] = [];
+  const content = message.content;
   if (typeof content === "string" && content.length > 0) {
-    return content;
+    events.push({ type: "text", text: content });
   }
-  return undefined;
+  const calls = parseToolCalls(message);
+  if (calls.length > 0) {
+    events.push({ type: "tool_calls", calls });
+  }
+  return events;
 }
 
 export async function listModels(
@@ -94,17 +182,23 @@ export async function* chatStream(
   args: {
     model: string;
     messages: ChatMessage[];
+    tools?: OllamaTool[];
     signal?: AbortSignal;
   },
-): AsyncGenerator<string, void, void> {
+): AsyncGenerator<ChatEvent, void, void> {
+  const body: Record<string, unknown> = {
+    model: args.model,
+    messages: args.messages.map(serializeMessage),
+    stream: true,
+  };
+  if (args.tools !== undefined && args.tools.length > 0) {
+    body.tools = args.tools;
+  }
+
   const response = await ollamaFetch(host, `${trimSlash(host)}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: args.model,
-      messages: args.messages,
-      stream: true,
-    }),
+    body: JSON.stringify(body),
     signal: args.signal,
   });
 
@@ -129,9 +223,8 @@ export async function* chatStream(
       const { done, value } = await reader.read();
       if (done) {
         buffer += decoder.decode();
-        const last = parseStreamLine(host, buffer);
-        if (last !== undefined) {
-          yield last;
+        for (const event of parseStreamLine(host, buffer)) {
+          yield event;
         }
         return;
       }
@@ -139,10 +232,10 @@ export async function* chatStream(
       buffer += decoder.decode(value, { stream: true });
       let newline = buffer.indexOf("\n");
       while (newline !== -1) {
-        const content = parseStreamLine(host, buffer.slice(0, newline));
+        const events = parseStreamLine(host, buffer.slice(0, newline));
         buffer = buffer.slice(newline + 1);
-        if (content !== undefined) {
-          yield content;
+        for (const event of events) {
+          yield event;
         }
         newline = buffer.indexOf("\n");
       }
@@ -152,10 +245,10 @@ export async function* chatStream(
   }
 }
 
-function parseStreamLine(host: string, line: string): string | undefined {
+function parseStreamLine(host: string, line: string): ChatEvent[] {
   const trimmed = line.trim();
   if (!trimmed) {
-    return undefined;
+    return [];
   }
   let parsed: unknown;
   try {
@@ -163,5 +256,5 @@ function parseStreamLine(host: string, line: string): string | undefined {
   } catch (err) {
     throw new OllamaError(`Malformed Ollama stream from ${host}`, { cause: err });
   }
-  return messageContent(parsed);
+  return eventsFromParsed(parsed);
 }
