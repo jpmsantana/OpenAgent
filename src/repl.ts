@@ -18,12 +18,16 @@ export type ReplDeps = {
   tools: Tool[];
 };
 
-/** Ask y/N for a write. Only trimmed lowercase `y` allows. */
+/** Ask y/N for a write. Only trimmed lowercase `y` allows. Abort denies. */
 export async function confirmWrite(
   rl: readline.Interface,
   output: NodeJS.WritableStream,
   info: ConfirmInfo,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  if (signal?.aborted) {
+    return false;
+  }
   const bytes = info.bytes ?? 0;
   output.write(`Allow write to ${info.path} (${bytes} bytes)? [y/N]\n`);
   if (info.preview !== "") {
@@ -31,9 +35,35 @@ export async function confirmWrite(
       output.write(`  ${line}\n`);
     }
   }
+  if (signal?.aborted) {
+    return false;
+  }
   const answer = await new Promise<string>((resolve) => {
-    rl.question("", resolve);
+    let settled = false;
+    const onAbort = (): void => {
+      finish("");
+    };
+    const finish = (value: string): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve(value);
+    };
+    signal?.addEventListener("abort", onAbort);
+    const onReply = (reply: string): void => {
+      finish(reply);
+    };
+    if (signal !== undefined) {
+      rl.question("", { signal }, onReply);
+    } else {
+      rl.question("", onReply);
+    }
   });
+  if (signal?.aborted) {
+    return false;
+  }
   const allowed = answer.trim().toLowerCase() === "y";
   if (!allowed) {
     output.write("denied\n");
@@ -88,8 +118,19 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     rl.close();
   }
 
-  process.on("SIGINT", quit);
-  rl.on("SIGINT", quit);
+  function onSigint(): void {
+    if (chat.abort !== undefined) {
+      if (!chat.abort.signal.aborted) {
+        deps.output.write("\ncancelled\n");
+        chat.abort.abort();
+      }
+      return;
+    }
+    quit();
+  }
+
+  process.on("SIGINT", onSigint);
+  rl.on("SIGINT", onSigint);
 
   try {
     let open = true;
@@ -109,15 +150,15 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         currentModel,
         chat,
         quit,
-        (info) => confirmWrite(rl, deps.output, info),
+        (info) => confirmWrite(rl, deps.output, info, chat.abort?.signal),
       );
       if (open && !quitting) {
         rl.prompt();
       }
     }
   } finally {
-    process.off("SIGINT", quit);
-    rl.removeListener("SIGINT", quit);
+    process.off("SIGINT", onSigint);
+    rl.removeListener("SIGINT", onSigint);
     rl.close();
   }
 }
