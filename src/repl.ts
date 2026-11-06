@@ -192,6 +192,10 @@ async function handleLine(
       case "help":
         deps.output.write(HELP_TEXT);
         return currentModel;
+      case "clear":
+        messages.length = 0;
+        deps.output.write("Conversation cleared.\n");
+        return currentModel;
       case "model":
         return handleModel(deps, currentModel, command.name);
       case "exit":
