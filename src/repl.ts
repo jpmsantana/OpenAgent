@@ -1,9 +1,11 @@
 import readline from "node:readline";
+import { runTurn } from "./agent.js";
 import { HELP_TEXT, parseCommand } from "./commands.js";
 import {
   OllamaError,
   type ChatMessage,
 } from "./ollama.js";
+import type { Tool } from "./tools.js";
 
 export type ReplDeps = {
   input: NodeJS.ReadableStream;
@@ -12,6 +14,8 @@ export type ReplDeps = {
   initialModel?: string;
   listModels: typeof import("./ollama.js").listModels;
   chatStream: typeof import("./ollama.js").chatStream;
+  workspaceRoot: string;
+  tools: Tool[];
 };
 
 export async function runRepl(deps: ReplDeps): Promise<void> {
@@ -39,6 +43,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
   }
 
   deps.output.write(`OpenAgent  (ollama / ${currentModel ?? "none"})\n`);
+  deps.output.write(`Workspace: ${deps.workspaceRoot}\n`);
   deps.output.write("Type /help for commands, /exit to quit.\n");
 
   const rl = readline.createInterface({
@@ -142,22 +147,18 @@ async function handleLine(
   messages.push({ role: "user", content: trimmed });
   const abort = new AbortController();
   chat.abort = abort;
-  let fullText = "";
   try {
-    for await (const event of deps.chatStream(deps.host, {
+    await runTurn({
+      host: deps.host,
       model: currentModel,
       messages,
+      tools: deps.tools,
+      chatStream: deps.chatStream,
+      output: deps.output,
+      workspaceRoot: deps.workspaceRoot,
       signal: abort.signal,
-    })) {
-      if (event.type === "text") {
-        deps.output.write(event.text);
-        fullText += event.text;
-      }
-    }
+    });
     deps.output.write("\n");
-    if (fullText !== "") {
-      messages.push({ role: "assistant", content: fullText });
-    }
   } catch (err) {
     if (isAbortError(err) || abort.signal.aborted) {
       return currentModel;
