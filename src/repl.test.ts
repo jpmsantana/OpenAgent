@@ -48,10 +48,28 @@ async function run(
   return { stdout: text(), calls };
 }
 
-function hang(line: string): Readable {
+function hang(line?: string): Readable {
   const stream = new Readable({ read() {} });
-  stream.push(`${line}\n`);
+  if (line !== undefined) {
+    stream.push(`${line}\n`);
+  }
   return stream;
+}
+
+async function waitFor(
+  text: () => string,
+  pattern: string | RegExp,
+  ms = 2000,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    const snapshot = text();
+    if (typeof pattern === "string" ? snapshot.includes(pattern) : pattern.test(snapshot)) {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error(`timeout waiting for ${String(pattern)}: ${text()}`);
 }
 
 describe("runRepl", { concurrency: 1 }, () => {
@@ -200,20 +218,47 @@ describe("runRepl", { concurrency: 1 }, () => {
     }
   });
 
-  it("SIGINT aborts in-flight chat and runRepl resolves", { timeout: 3000 }, async () => {
+  it("idle SIGINT still quits", { timeout: 3000 }, async () => {
+    const stream = hang();
+    const { output, text } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: async function* () {
+        yield { type: "text", text: "ok" };
+      },
+      workspaceRoot: "/workspace",
+      tools: [],
+    });
+    try {
+      await waitFor(text, "> ");
+      process.emit("SIGINT");
+      await done;
+      assert.equal(text().includes("cancelled"), false);
+      assert.equal(text().includes("Error: aborted"), false);
+    } finally {
+      stream.destroy();
+    }
+  });
+
+  it("SIGINT during chat cancels the turn and stays in the REPL", { timeout: 3000 }, async () => {
     let release!: () => void;
     const started = new Promise<void>((resolve) => {
       release = resolve;
     });
     let seenAbort = false;
+    let calls = 0;
     const stream = hang("hello");
-    const { output } = collect();
+    const { output, text } = collect();
     const done = runRepl({
       input: stream,
       output,
       host: "http://127.0.0.1:11434",
       listModels: async () => ["m"],
       chatStream: async function* (_host, args) {
+        calls += 1;
         await new Promise<void>((_resolve, reject) => {
           const signal = args.signal;
           if (signal === undefined) {
@@ -238,11 +283,25 @@ describe("runRepl", { concurrency: 1 }, () => {
       workspaceRoot: "/workspace",
       tools: [],
     });
+    const outcome = done.then(
+      () => "resolved" as const,
+      (err: unknown) => err,
+    );
     try {
       await started;
       process.emit("SIGINT");
-      await done;
+      await waitFor(text, /cancelled/);
+      const raced = await Promise.race([
+        outcome,
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+      ]);
+      assert.equal(raced, "pending");
       assert.equal(seenAbort, true);
+      assert.equal(calls, 1);
+      assert.equal(text().includes("Error: aborted"), false);
+      await waitFor(text, /cancelled\n> /);
+      process.emit("SIGINT");
+      await done;
     } finally {
       stream.destroy();
     }
@@ -282,13 +341,7 @@ describe("runRepl", { concurrency: 1 }, () => {
     });
     try {
       stream.push("write a note\n");
-      const start = Date.now();
-      while (!text().includes("[y/N]")) {
-        if (Date.now() - start > 2000) {
-          throw new Error(`prompt not shown: ${text()}`);
-        }
-        await new Promise((r) => setTimeout(r, 10));
-      }
+      await waitFor(text, "[y/N]");
       await new Promise((r) => setTimeout(r, 25));
       stream.push("y\n");
       stream.push(null);
@@ -345,6 +398,111 @@ describe("runRepl", { concurrency: 1 }, () => {
     const empty = await ask("");
     assert.equal(empty.allowed, false);
     assert.match(empty.stdout, /denied/);
+  });
+
+  it("confirmWrite already-aborted skips the prompt", async () => {
+    const { output, text } = collect();
+    const rl = readline.createInterface({
+      input: input([]),
+      output,
+    });
+    try {
+      const allowed = await confirmWrite(
+        rl,
+        output,
+        {
+          name: "write_file",
+          path: "a.txt",
+          preview: "hello",
+          bytes: 5,
+        },
+        AbortSignal.abort(),
+      );
+      assert.equal(allowed, false);
+      assert.equal(text(), "");
+    } finally {
+      rl.close();
+    }
+  });
+
+  it("confirmWrite abort resolves false without denied", async () => {
+    const { output, text } = collect();
+    const stream = new Readable({ read() {} });
+    const rl = readline.createInterface({
+      input: stream,
+      output,
+    });
+    const controller = new AbortController();
+    try {
+      const pending = confirmWrite(
+        rl,
+        output,
+        {
+          name: "write_file",
+          path: "a.txt",
+          preview: "hello",
+          bytes: 5,
+        },
+        controller.signal,
+      );
+      controller.abort();
+      assert.equal(await pending, false);
+      assert.equal(text().includes("denied"), false);
+    } finally {
+      rl.close();
+      stream.destroy();
+    }
+  });
+
+  it("SIGINT during write confirm denies and stays", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-cancel-write-"));
+    const stream = hang("write a note");
+    const { output, text } = collect();
+    let rounds = 0;
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: async function* () {
+        rounds += 1;
+        yield {
+          type: "tool_calls",
+          calls: [
+            {
+              function: {
+                name: "write_file",
+                arguments: { path: "note.txt", content: "hello" },
+              },
+            },
+          ],
+        };
+      },
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    const outcome = done.then(
+      () => "resolved" as const,
+      (err: unknown) => err,
+    );
+    try {
+      await waitFor(text, "[y/N]");
+      process.emit("SIGINT");
+      await waitFor(text, /cancelled/);
+      const raced = await Promise.race([
+        outcome,
+        new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+      ]);
+      assert.equal(raced, "pending");
+      assert.equal(fs.existsSync(path.join(root, "note.txt")), false);
+      assert.equal(text().includes("Error: aborted"), false);
+      assert.equal(rounds, 1);
+      stream.push("/exit\n");
+      await done;
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("/model stays in the REPL when listModels throws", async () => {
