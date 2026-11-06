@@ -34,6 +34,21 @@ function rethrowIfAbort(err: unknown, signal?: AbortSignal): void {
   signal?.throwIfAborted();
 }
 
+function toolCallLine(name: string, args: Record<string, unknown>): string {
+  let printed: unknown = args;
+  if (
+    name === "write_file" &&
+    typeof args.content === "string" &&
+    args.content.length > 80
+  ) {
+    printed = {
+      path: args.path,
+      content: `<truncated ${Buffer.byteLength(args.content, "utf8")} bytes>`,
+    };
+  }
+  return `tool: ${name} ${JSON.stringify(printed)}\n`;
+}
+
 function toOllamaTools(tools: Tool[]): OllamaTool[] | undefined {
   if (tools.length === 0) {
     return undefined;
@@ -106,7 +121,7 @@ export async function runTurn(deps: RunTurnDeps): Promise<void> {
       deps.signal?.throwIfAborted();
       const name = call.function.name;
       const args = call.function.arguments;
-      deps.output.write(`tool: ${name} ${JSON.stringify(args)}\n`);
+      deps.output.write(toolCallLine(name, args));
       const tool = deps.tools.find((candidate) => candidate.name === name);
       let result: string;
       try {
@@ -117,6 +132,9 @@ export async function runTurn(deps: RunTurnDeps): Promise<void> {
       } catch (err) {
         rethrowIfAbort(err, deps.signal);
         throw err;
+      }
+      if (name === "write_file" && result.startsWith("Wrote ")) {
+        deps.output.write(`${result}\n`);
       }
       deps.messages.push({
         role: "tool",

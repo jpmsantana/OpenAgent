@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import readline from "node:readline";
 import { Readable, Writable } from "node:stream";
 import { describe, it } from "node:test";
 import { AGENT_SYSTEM_PROMPT } from "./agent.ts";
 import { OllamaError, type ChatMessage } from "./ollama.ts";
-import { runRepl, type ReplDeps } from "./repl.ts";
+import { confirmWrite, runRepl, type ReplDeps } from "./repl.ts";
+import { createTools } from "./tools.ts";
 
 function collect(): { output: Writable; text: () => string } {
   let buf = "";
@@ -241,6 +246,105 @@ describe("runRepl", { concurrency: 1 }, () => {
     } finally {
       stream.destroy();
     }
+  });
+
+  it("REPL write_file y creates the file", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-write-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    let round = 0;
+    const chatStream: ReplDeps["chatStream"] = async function* () {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "tool_calls",
+          calls: [
+            {
+              function: {
+                name: "write_file",
+                arguments: { path: "note.txt", content: "hello" },
+              },
+            },
+          ],
+        };
+        return;
+      }
+      yield { type: "text", text: "done" };
+    };
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream,
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("write a note\n");
+      const start = Date.now();
+      while (!text().includes("[y/N]")) {
+        if (Date.now() - start > 2000) {
+          throw new Error(`prompt not shown: ${text()}`);
+        }
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("y\n");
+      stream.push(null);
+      await done;
+      assert.equal(
+        fs.readFileSync(path.join(root, "note.txt"), "utf8"),
+        "hello",
+      );
+      assert.match(text(), /Allow write to note.txt \(5 bytes\)\? \[y\/N\]/);
+      assert.match(text(), /Wrote 5 bytes to note.txt/);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("confirmWrite allows only trimmed lowercase y", async () => {
+    async function ask(answer: string): Promise<{ allowed: boolean; stdout: string }> {
+      const { output, text } = collect();
+      const rl = readline.createInterface({
+        input: input([answer]),
+        output,
+      });
+      try {
+        const allowed = await confirmWrite(rl, output, {
+          name: "write_file",
+          path: "a.txt",
+          preview: "hello",
+          bytes: 5,
+        });
+        return { allowed, stdout: text() };
+      } finally {
+        rl.close();
+      }
+    }
+
+    const yes = await ask("y");
+    assert.equal(yes.allowed, true);
+    assert.match(yes.stdout, /Allow write to a.txt \(5 bytes\)\? \[y\/N\]/);
+    assert.match(yes.stdout, /^ {2}hello$/m);
+    assert.equal(yes.stdout.includes("denied"), false);
+
+    const padded = await ask(" Y ");
+    assert.equal(padded.allowed, true);
+
+    const no = await ask("n");
+    assert.equal(no.allowed, false);
+    assert.match(no.stdout, /denied/);
+
+    const word = await ask("yes");
+    assert.equal(word.allowed, false);
+    assert.match(word.stdout, /denied/);
+
+    const empty = await ask("");
+    assert.equal(empty.allowed, false);
+    assert.match(empty.stdout, /denied/);
   });
 
   it("/model stays in the REPL when listModels throws", async () => {

@@ -3,7 +3,7 @@
 import { loadConfig } from "./config.js";
 import { chatStream, listModels } from "./ollama.js";
 import { runRepl } from "./repl.js";
-import { createReadTools } from "./tools.js";
+import { createTools } from "./tools.js";
 
 export function usage(): string {
   return `openagent — local chat CLI
@@ -30,7 +30,7 @@ export async function main(argv: string[]): Promise<number> {
       listModels,
       chatStream,
       workspaceRoot: process.cwd(),
-      tools: createReadTools(),
+      tools: createTools(),
     });
     return 0;
   } catch {
