@@ -11,7 +11,7 @@ import {
   type RunTurnDeps,
 } from "./agent.ts";
 import type { ChatEvent, ChatMessage } from "./ollama.ts";
-import { createReadTools } from "./tools.ts";
+import { createTools } from "./tools.ts";
 
 function collect(): { output: Writable; text: () => string } {
   let buf = "";
@@ -92,7 +92,7 @@ describe("runTurn", () => {
     await runTurn(
       baseDeps({
         messages,
-        tools: createReadTools(),
+        tools: createTools(),
         chatStream,
         output,
       }),
@@ -104,7 +104,7 @@ describe("runTurn", () => {
     assert.ok(tools);
     assert.deepEqual(
       tools.map((tool) => tool.function.name),
-      ["list_dir", "read_file"],
+      ["list_dir", "read_file", "write_file"],
     );
   });
 
@@ -128,7 +128,7 @@ describe("runTurn", () => {
       await runTurn(
         baseDeps({
           messages,
-          tools: createReadTools(),
+          tools: createTools(),
           chatStream,
           output,
           workspaceRoot: root,
@@ -179,7 +179,7 @@ describe("runTurn", () => {
       await runTurn(
         baseDeps({
           messages,
-          tools: createReadTools(),
+          tools: createTools(),
           chatStream,
           output,
           workspaceRoot: root,
@@ -345,6 +345,127 @@ describe("runTurn", () => {
       messages.filter((message) => message.tool_name === "second").length,
       0,
     );
+  });
+
+  it("write_file confirm true writes the file", async () => {
+    await withTempWorkspace(async (root) => {
+      const { output, text } = collect();
+      const messages: ChatMessage[] = [{ role: "user", content: "write" }];
+      const { chatStream } = scriptedChat([
+        [
+          {
+            type: "tool_calls",
+            calls: [
+              {
+                function: {
+                  name: "write_file",
+                  arguments: { path: "a.txt", content: "hello" },
+                },
+              },
+            ],
+          },
+        ],
+        [{ type: "text", text: "ok" }],
+      ]);
+      await runTurn(
+        baseDeps({
+          messages,
+          tools: createTools(),
+          chatStream,
+          output,
+          workspaceRoot: root,
+          confirm: async () => true,
+        }),
+      );
+      assert.equal(fs.readFileSync(path.join(root, "a.txt"), "utf8"), "hello");
+      assert.match(text(), /Wrote 5 bytes to a.txt/);
+      const toolMsg = messages.find((message) => message.role === "tool");
+      assert.equal(toolMsg?.content, "Wrote 5 bytes to a.txt");
+    });
+  });
+
+  it("write_file confirm false leaves the file unchanged", async () => {
+    await withTempWorkspace(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "keep");
+      const { output, text } = collect();
+      const messages: ChatMessage[] = [{ role: "user", content: "write" }];
+      const { chatStream } = scriptedChat([
+        [
+          {
+            type: "tool_calls",
+            calls: [
+              {
+                function: {
+                  name: "write_file",
+                  arguments: { path: "a.txt", content: "nope" },
+                },
+              },
+            ],
+          },
+        ],
+        [{ type: "text", text: "ok" }],
+      ]);
+      await runTurn(
+        baseDeps({
+          messages,
+          tools: createTools(),
+          chatStream,
+          output,
+          workspaceRoot: root,
+          confirm: async () => false,
+        }),
+      );
+      assert.equal(fs.readFileSync(path.join(root, "a.txt"), "utf8"), "keep");
+      assert.equal(
+        messages.find((message) => message.role === "tool")?.content,
+        "User denied write to a.txt.",
+      );
+      assert.equal(text().includes("denied"), false);
+    });
+  });
+
+  it("write_file tool line truncates content longer than 80 characters", async () => {
+    await withTempWorkspace(async (root) => {
+      const { output, text } = collect();
+      const content = "x".repeat(81);
+      const n = Buffer.byteLength(content, "utf8");
+      const messages: ChatMessage[] = [{ role: "user", content: "write" }];
+      const { chatStream } = scriptedChat([
+        [
+          {
+            type: "tool_calls",
+            calls: [
+              {
+                function: {
+                  name: "write_file",
+                  arguments: { path: "big.txt", content },
+                },
+              },
+            ],
+          },
+        ],
+        [{ type: "text", text: "ok" }],
+      ]);
+      await runTurn(
+        baseDeps({
+          messages,
+          tools: createTools(),
+          chatStream,
+          output,
+          workspaceRoot: root,
+          confirm: async () => true,
+        }),
+      );
+      const stdout = text();
+      assert.match(
+        stdout,
+        new RegExp(
+          `tool: write_file \\{"path":"big.txt","content":"<truncated ${n} bytes>"\\}`,
+        ),
+      );
+      assert.equal(stdout.includes(content), false);
+      assert.equal(fs.readFileSync(path.join(root, "big.txt"), "utf8"), content);
+    });
   });
 
   it("empty tools omits tools on the chatStream request", async () => {

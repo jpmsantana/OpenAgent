@@ -5,7 +5,7 @@ import {
   OllamaError,
   type ChatMessage,
 } from "./ollama.js";
-import type { Tool } from "./tools.js";
+import type { ConfirmInfo, Tool } from "./tools.js";
 
 export type ReplDeps = {
   input: NodeJS.ReadableStream;
@@ -17,6 +17,29 @@ export type ReplDeps = {
   workspaceRoot: string;
   tools: Tool[];
 };
+
+/** Ask y/N for a write. Only trimmed lowercase `y` allows. */
+export async function confirmWrite(
+  rl: readline.Interface,
+  output: NodeJS.WritableStream,
+  info: ConfirmInfo,
+): Promise<boolean> {
+  const bytes = info.bytes ?? 0;
+  output.write(`Allow write to ${info.path} (${bytes} bytes)? [y/N]\n`);
+  if (info.preview !== "") {
+    for (const line of info.preview.split("\n")) {
+      output.write(`  ${line}\n`);
+    }
+  }
+  const answer = await new Promise<string>((resolve) => {
+    rl.question("", resolve);
+  });
+  const allowed = answer.trim().toLowerCase() === "y";
+  if (!allowed) {
+    output.write("denied\n");
+  }
+  return allowed;
+}
 
 export async function runRepl(deps: ReplDeps): Promise<void> {
   let models: string[];
@@ -86,6 +109,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         currentModel,
         chat,
         quit,
+        (info) => confirmWrite(rl, deps.output, info),
       );
       if (open && !quitting) {
         rl.prompt();
@@ -114,6 +138,7 @@ async function handleLine(
   currentModel: string | undefined,
   chat: { abort?: AbortController },
   quit: () => void,
+  confirm: (info: ConfirmInfo) => Promise<boolean>,
 ): Promise<string | undefined> {
   const trimmed = line.trim();
   if (trimmed === "") {
@@ -157,6 +182,7 @@ async function handleLine(
       output: deps.output,
       workspaceRoot: deps.workspaceRoot,
       signal: abort.signal,
+      confirm,
     });
     deps.output.write("\n");
   } catch (err) {
