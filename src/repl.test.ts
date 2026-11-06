@@ -102,8 +102,28 @@ describe("runRepl", { concurrency: 1 }, () => {
   it("/help prints the command list", async () => {
     const { stdout, calls } = await run(["/help"]);
     assert.match(stdout, /Commands:/);
+    assert.match(stdout, /\/clear/);
     assert.match(stdout, /\/exit/);
     assert.equal(calls.length, 0);
+  });
+
+  it("/clear drops history and prints Conversation cleared.", async () => {
+    const { stdout, calls } = await run(["hello", "/clear", "again"]);
+    assert.match(stdout, /Conversation cleared\./);
+    assert.equal(calls.length, 2);
+    const second = calls[1][1].messages as ChatMessage[];
+    assert.deepEqual(second, [
+      { role: "system", content: AGENT_SYSTEM_PROMPT },
+      { role: "user", content: "again" },
+    ]);
+  });
+
+  it("/clear keeps the selected model", async () => {
+    const { calls } = await run(["/model b", "/clear", "hello"], {
+      listModels: async () => ["a", "b"],
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1].model, "b");
   });
 
   it("unreachable Ollama prints serve hint and throws", async () => {

@@ -1,11 +1,13 @@
 export type Command =
   | { type: "help" }
+  | { type: "clear" }
   | { type: "model"; name?: string }
   | { type: "exit" }
   | { type: "unknown"; raw: string };
 
 export const HELP_TEXT = `Commands:
   /help           Show this help
+  /clear          Clear conversation history
   /model          List models from Ollama
   /model <name>   Select a model
   /exit           Quit
@@ -22,6 +24,8 @@ export function parseCommand(line: string): Command | null {
   switch (raw) {
     case "/help":
       return { type: "help" };
+    case "/clear":
+      return arg === "" ? { type: "clear" } : { type: "unknown", raw };
     case "/model":
       return arg === "" ? { type: "model" } : { type: "model", name: arg };
     case "/exit":
