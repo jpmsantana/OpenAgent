@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Readable, Writable } from "node:stream";
 import { describe, it } from "node:test";
+import { AGENT_SYSTEM_PROMPT } from "./agent.ts";
 import { OllamaError, type ChatMessage } from "./ollama.ts";
 import { runRepl, type ReplDeps } from "./repl.ts";
 
@@ -35,6 +36,8 @@ async function run(
     host: "http://127.0.0.1:11434",
     listModels: async () => ["m"],
     chatStream,
+    workspaceRoot: "/workspace",
+    tools: [],
     ...overrides,
   });
   return { stdout: text(), calls };
@@ -50,14 +53,23 @@ describe("runRepl", { concurrency: 1 }, () => {
   it("streams chat chunks to stdout", async () => {
     const { stdout } = await run(["hello"]);
     assert.match(stdout, /OpenAgent {2}\(ollama \/ m\)/);
+    assert.match(stdout, /Workspace: \/workspace/);
     assert.match(stdout, /ok/);
+  });
+
+  it("banner includes Workspace", async () => {
+    const { stdout, calls } = await run([]);
+    assert.match(stdout, /Workspace: /);
+    assert.equal(calls.length, 0);
   });
 
   it("second turn includes prior user and assistant messages", async () => {
     const { calls } = await run(["hello", "again"]);
     assert.equal(calls.length, 2);
+    assert.equal(calls[0][1].tools, undefined);
     const second = calls[1][1].messages as ChatMessage[];
     assert.deepEqual(second, [
+      { role: "system", content: AGENT_SYSTEM_PROMPT },
       { role: "user", content: "hello" },
       { role: "assistant", content: "ok" },
       { role: "user", content: "again" },
@@ -90,6 +102,8 @@ describe("runRepl", { concurrency: 1 }, () => {
               throw new OllamaError("Cannot reach Ollama at http://127.0.0.1:9");
             },
             chatStream: async function* () {},
+            workspaceRoot: "/workspace",
+            tools: [],
           }),
         OllamaError,
       );
@@ -172,6 +186,8 @@ describe("runRepl", { concurrency: 1 }, () => {
           calls += 1;
           yield { type: "text", text: "ok" };
         },
+        workspaceRoot: "/workspace",
+        tools: [],
       });
       assert.equal(calls, 0);
     } finally {
@@ -214,6 +230,8 @@ describe("runRepl", { concurrency: 1 }, () => {
         });
         yield { type: "text", text: "ok" };
       },
+      workspaceRoot: "/workspace",
+      tools: [],
     });
     try {
       await started;
