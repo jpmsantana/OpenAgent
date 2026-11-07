@@ -2,7 +2,7 @@ import type { ChatMessage, OllamaTool, ToolCall } from "./ollama.js";
 import type { Tool, ToolContext } from "./tools.js";
 
 export const AGENT_SYSTEM_PROMPT =
-  "You are OpenAgent, a local coding assistant. The workspace is the current working directory. Use the provided tools to inspect and edit files. Never guess file contents; read them. You have no shell and no network.";
+  "You are OpenAgent, a local coding assistant. The workspace is the current working directory. Use the provided tools to inspect and edit files. Never guess file contents; read them. Use run_command only to run programs such as tests, builds, and git. Pass argv as an array; there is no shell. You have no network tool.";
 
 export const MAX_TOOL_ROUNDS = 8;
 
@@ -134,6 +134,9 @@ export async function runTurn(deps: RunTurnDeps): Promise<void> {
         throw err;
       }
       if (name === "write_file" && result.startsWith("Wrote ")) {
+        deps.output.write(`${result}\n`);
+      }
+      if (name === "run_command" && !result.startsWith("User denied command:")) {
         deps.output.write(`${result}\n`);
       }
       deps.messages.push({

@@ -7,7 +7,7 @@ import { Readable, Writable } from "node:stream";
 import { describe, it } from "node:test";
 import { AGENT_SYSTEM_PROMPT } from "./agent.ts";
 import { OllamaError, type ChatMessage } from "./ollama.ts";
-import { confirmWrite, runRepl, type ReplDeps } from "./repl.ts";
+import { confirmCommand, confirmWrite, runRepl, type ReplDeps } from "./repl.ts";
 import { createTools } from "./tools.ts";
 
 function collect(): { output: Writable; text: () => string } {
@@ -378,6 +378,105 @@ describe("runRepl", { concurrency: 1 }, () => {
     }
   });
 
+  it("REPL run_command y runs the process", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-run-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    let round = 0;
+    const argv = ["node", "-e", "process.stdout.write('RAN_OK')"];
+    const chatStream: ReplDeps["chatStream"] = async function* () {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "tool_calls",
+          calls: [
+            {
+              function: {
+                name: "run_command",
+                arguments: { argv },
+              },
+            },
+          ],
+        };
+        return;
+      }
+      yield { type: "text", text: "done" };
+    };
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream,
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("run it\n");
+      await waitFor(text, "[y/N]");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("y\n");
+      await waitFor(text, /exit 0/);
+      assert.ok(
+        text().includes(`Allow command ${JSON.stringify(argv)}? [y/N]`),
+      );
+      assert.match(text(), /RAN_OK/);
+      stream.push("/exit\n");
+      await done;
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("REPL run_command n does not run", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-run-n-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    let round = 0;
+    const argv = ["node", "-e", "process.stdout.write('RAN_OK')"];
+    const chatStream: ReplDeps["chatStream"] = async function* () {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "tool_calls",
+          calls: [
+            {
+              function: {
+                name: "run_command",
+                arguments: { argv },
+              },
+            },
+          ],
+        };
+        return;
+      }
+      yield { type: "text", text: "done" };
+    };
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream,
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("run it\n");
+      await waitFor(text, "[y/N]");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("n\n");
+      await waitFor(text, /denied/);
+      assert.equal(text().includes("exit 0"), false);
+      stream.push("/exit\n");
+      await done;
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("confirmWrite allows only trimmed lowercase y", async () => {
     async function ask(answer: string): Promise<{ allowed: boolean; stdout: string }> {
       const { output, text } = collect();
@@ -418,6 +517,35 @@ describe("runRepl", { concurrency: 1 }, () => {
     const empty = await ask("");
     assert.equal(empty.allowed, false);
     assert.match(empty.stdout, /denied/);
+  });
+
+  it("confirmCommand allows only trimmed lowercase y", async () => {
+    async function ask(answer: string): Promise<{ allowed: boolean; stdout: string }> {
+      const { output, text } = collect();
+      const rl = readline.createInterface({
+        input: input([answer]),
+        output,
+      });
+      try {
+        const allowed = await confirmCommand(rl, output, {
+          name: "run_command",
+          preview: JSON.stringify(["npm", "test"]),
+          argv: ["npm", "test"],
+        });
+        return { allowed, stdout: text() };
+      } finally {
+        rl.close();
+      }
+    }
+
+    const yes = await ask("y");
+    assert.equal(yes.allowed, true);
+    assert.match(yes.stdout, /Allow command \["npm","test"\]\? \[y\/N\]/);
+    assert.equal(yes.stdout.includes("denied"), false);
+
+    const no = await ask("n");
+    assert.equal(no.allowed, false);
+    assert.match(no.stdout, /denied/);
   });
 
   it("confirmWrite already-aborted skips the prompt", async () => {

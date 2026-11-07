@@ -1,19 +1,28 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  ExecArgvError,
+  formatCommandResult,
+  runCommand,
+  type RunCommandOpts,
+  type RunCommandResult,
+} from "./exec.js";
 import { WorkspacePathError, resolveWorkspacePath } from "./workspace.js";
 
 export type ConfirmInfo = {
   name: string;
-  path: string;
   preview: string;
+  path?: string;
   bytes?: number;
+  argv?: string[];
 };
 
 export type ToolContext = {
   workspaceRoot: string;
   signal?: AbortSignal;
   confirm?: (info: ConfirmInfo) => Promise<boolean>;
+  run?: (opts: RunCommandOpts) => Promise<RunCommandResult>;
 };
 
 export type Tool = {
@@ -32,8 +41,17 @@ export type Tool = {
 
 export const READ_MAX_BYTES = 262144;
 
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "name" in err &&
+    (err as { name: string }).name === "AbortError"
+  );
+}
+
 function toolError(err: unknown): string {
-  if (err instanceof WorkspacePathError) {
+  if (err instanceof WorkspacePathError || err instanceof ExecArgvError) {
     return err.message;
   }
   const message = err instanceof Error ? err.message : String(err);
@@ -219,6 +237,50 @@ async function writeFile(
   return `Wrote ${n} bytes to ${relPath}`;
 }
 
+function isArgv(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every((part) => typeof part === "string") &&
+    value[0] !== ""
+  );
+}
+
+async function runCommandTool(
+  args: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<string> {
+  if (!isArgv(args.argv)) {
+    return "Error: invalid arguments for run_command";
+  }
+  const argv = args.argv;
+  if (ctx.confirm === undefined) {
+    return `User denied command: ${JSON.stringify(argv)}`;
+  }
+  const allowed = await ctx.confirm({
+    name: "run_command",
+    preview: JSON.stringify(argv),
+    argv,
+  });
+  if (!allowed) {
+    return `User denied command: ${JSON.stringify(argv)}`;
+  }
+  const run = ctx.run ?? runCommand;
+  try {
+    const result = await run({
+      argv,
+      cwd: ctx.workspaceRoot,
+      signal: ctx.signal,
+    });
+    return formatCommandResult(result);
+  } catch (err) {
+    if (isAbortError(err) || ctx.signal?.aborted) {
+      throw err;
+    }
+    return toolError(err);
+  }
+}
+
 export function createTools(): Tool[] {
   return [
     {
@@ -262,6 +324,24 @@ export function createTools(): Tool[] {
         required: ["path", "content"],
       },
       execute: writeFile,
+    },
+    {
+      name: "run_command",
+      description:
+        "Run a program in the workspace directory. argv is an array: the program and its arguments. No shell. The user must approve each command.",
+      parameters: {
+        type: "object",
+        properties: {
+          argv: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Program and arguments. First element is the executable. No shell.",
+          },
+        },
+        required: ["argv"],
+      },
+      execute: runCommandTool,
     },
   ];
 }

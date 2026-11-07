@@ -18,23 +18,11 @@ export type ReplDeps = {
   tools: Tool[];
 };
 
-/** Ask y/N for a write. Only trimmed lowercase `y` allows. Abort denies. */
-export async function confirmWrite(
+async function askYesNo(
   rl: readline.Interface,
   output: NodeJS.WritableStream,
-  info: ConfirmInfo,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  if (signal?.aborted) {
-    return false;
-  }
-  const bytes = info.bytes ?? 0;
-  output.write(`Allow write to ${info.path} (${bytes} bytes)? [y/N]\n`);
-  if (info.preview !== "") {
-    for (const line of info.preview.split("\n")) {
-      output.write(`  ${line}\n`);
-    }
-  }
   if (signal?.aborted) {
     return false;
   }
@@ -69,6 +57,59 @@ export async function confirmWrite(
     output.write("denied\n");
   }
   return allowed;
+}
+
+/** Ask y/N for a write. Only trimmed lowercase `y` allows. Abort denies. */
+export async function confirmWrite(
+  rl: readline.Interface,
+  output: NodeJS.WritableStream,
+  info: ConfirmInfo,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) {
+    return false;
+  }
+  if (info.path === undefined) {
+    return false;
+  }
+  const bytes = info.bytes ?? 0;
+  output.write(`Allow write to ${info.path} (${bytes} bytes)? [y/N]\n`);
+  if (info.preview !== "") {
+    for (const line of info.preview.split("\n")) {
+      output.write(`  ${line}\n`);
+    }
+  }
+  return askYesNo(rl, output, signal);
+}
+
+/** Ask y/N for a command. Only trimmed lowercase `y` allows. Abort denies. */
+export async function confirmCommand(
+  rl: readline.Interface,
+  output: NodeJS.WritableStream,
+  info: ConfirmInfo,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) {
+    return false;
+  }
+  output.write(`Allow command ${info.preview}? [y/N]\n`);
+  return askYesNo(rl, output, signal);
+}
+
+/** Dispatch y/N by tool name. Unknown names are denied. */
+export async function confirm(
+  rl: readline.Interface,
+  output: NodeJS.WritableStream,
+  info: ConfirmInfo,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (info.name === "write_file") {
+    return confirmWrite(rl, output, info, signal);
+  }
+  if (info.name === "run_command") {
+    return confirmCommand(rl, output, info, signal);
+  }
+  return false;
 }
 
 export async function runRepl(deps: ReplDeps): Promise<void> {
@@ -150,7 +191,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         currentModel,
         chat,
         quit,
-        (info) => confirmWrite(rl, deps.output, info, chat.abort?.signal),
+        (info) => confirm(rl, deps.output, info, chat.abort?.signal),
       );
       if (open && !quitting) {
         rl.prompt();

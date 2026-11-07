@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
+import { formatCommandResult } from "./exec.ts";
 import { createTools, READ_MAX_BYTES } from "./tools.ts";
 
 function tmp(): string {
@@ -28,10 +29,10 @@ function tools() {
 }
 
 describe("createTools", () => {
-  it("returns tools named list_dir, read_file, and write_file", () => {
+  it("returns tools named list_dir, read_file, write_file, and run_command", () => {
     assert.deepEqual(
       createTools().map((tool) => tool.name),
-      ["list_dir", "read_file", "write_file"],
+      ["list_dir", "read_file", "write_file", "run_command"],
     );
   });
 
@@ -341,6 +342,156 @@ describe("write_file", () => {
       );
       assert.equal(result, "Wrote 0 bytes to empty.txt");
       assert.equal(fs.readFileSync(path.join(root, "empty.txt"), "utf8"), "");
+    });
+  });
+});
+
+describe("run_command", () => {
+  function runTool() {
+    const tool = createTools().find((entry) => entry.name === "run_command");
+    assert.ok(tool);
+    return tool;
+  }
+
+  it("confirm true calls run and formats the result", async () => {
+    await withTree(async (root) => {
+      const stub = {
+        exitCode: 0,
+        stdout: "hi",
+        stderr: "",
+        timedOut: false,
+        truncated: false,
+      };
+      let ran: { argv: string[]; cwd: string; signal?: AbortSignal } | undefined;
+      const result = await runTool().execute(
+        { argv: ["node", "-e", "1"] },
+        {
+          workspaceRoot: root,
+          confirm: async () => true,
+          run: async (opts) => {
+            ran = opts;
+            return stub;
+          },
+        },
+      );
+      assert.deepEqual(ran, {
+        argv: ["node", "-e", "1"],
+        cwd: root,
+        signal: undefined,
+      });
+      assert.equal(result, formatCommandResult(stub));
+    });
+  });
+
+  it("confirm false does not call run", async () => {
+    await withTree(async (root) => {
+      let called = 0;
+      const result = await runTool().execute(
+        { argv: ["node", "-e", "1"] },
+        {
+          workspaceRoot: root,
+          confirm: async () => false,
+          run: async () => {
+            called += 1;
+            return {
+              exitCode: 0,
+              stdout: "",
+              stderr: "",
+              timedOut: false,
+              truncated: false,
+            };
+          },
+        },
+      );
+      assert.equal(result, `User denied command: ${JSON.stringify(["node", "-e", "1"])}`);
+      assert.equal(called, 0);
+    });
+  });
+
+  it("missing confirm is denied and does not run", async () => {
+    await withTree(async (root) => {
+      let called = 0;
+      const result = await runTool().execute(
+        { argv: ["node", "-e", "1"] },
+        {
+          workspaceRoot: root,
+          run: async () => {
+            called += 1;
+            return {
+              exitCode: 0,
+              stdout: "",
+              stderr: "",
+              timedOut: false,
+              truncated: false,
+            };
+          },
+        },
+      );
+      assert.equal(result, `User denied command: ${JSON.stringify(["node", "-e", "1"])}`);
+      assert.equal(called, 0);
+    });
+  });
+
+  it("invalid argv does not confirm", async () => {
+    await withTree(async (root) => {
+      let called = 0;
+      const confirm = async (): Promise<boolean> => {
+        called += 1;
+        return true;
+      };
+      const tool = runTool();
+      assert.equal(
+        await tool.execute({}, { workspaceRoot: root, confirm }),
+        "Error: invalid arguments for run_command",
+      );
+      assert.equal(
+        await tool.execute({ argv: [] }, { workspaceRoot: root, confirm }),
+        "Error: invalid arguments for run_command",
+      );
+      assert.equal(
+        await tool.execute({ argv: [1] }, { workspaceRoot: root, confirm }),
+        "Error: invalid arguments for run_command",
+      );
+      assert.equal(called, 0);
+    });
+  });
+
+  it("AbortError from run is rethrown", async () => {
+    await withTree(async (root) => {
+      const err = new Error("aborted");
+      err.name = "AbortError";
+      await assert.rejects(
+        () =>
+          runTool().execute(
+            { argv: ["node", "-e", "1"] },
+            {
+              workspaceRoot: root,
+              confirm: async () => true,
+              run: async () => {
+                throw err;
+              },
+            },
+          ),
+        (caught: unknown) => {
+          assert.equal(caught, err);
+          return true;
+        },
+      );
+    });
+  });
+
+  it("path escape after confirm does not spawn outside", async () => {
+    await withTree(async (root, base) => {
+      const marker = path.join(base, "ran.txt");
+      fs.writeFileSync(path.join(base, "outside.sh"), `#!/bin/sh\necho ran > "${marker}"\n`, {
+        mode: 0o755,
+      });
+      const result = await runTool().execute(
+        { argv: ["../outside.sh"] },
+        { workspaceRoot: root, confirm: async () => true },
+      );
+      assert.match(result, /path escapes workspace/);
+      assert.equal(fs.existsSync(marker), false);
     });
   });
 });
