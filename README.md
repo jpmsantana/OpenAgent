@@ -14,21 +14,24 @@ OpenAgent is an open-source agent that can browse the web, search, write program
 
 ## Status
 
-M1 local Ollama chat still works. M2 adds **workspace file tools** in the current working directory. Reads run immediately. Each write waits for `y/N`. The goals above remain the product direction.
+M1 local Ollama chat still works. M2 adds **workspace file tools** in the current working directory. M3 adds a gated **`run_command`** tool (argv, no shell). Reads run immediately. Each write and each command waits for `y/N`. The goals above remain the product direction.
 
 What works now:
 
 - Interactive chat REPL against local Ollama
 - Config selects the Ollama host; models come from Ollama, not listed in the config file
 - `/model`, `/help`, `/clear`, `/exit`
-- Ctrl-C during a turn cancels and returns to the prompt; Ctrl-C on an empty prompt quits
-- Tools: `list_dir`, `read_file`, `write_file` on the current working directory
-- `write_file` requires typing `y` (not `yes`)
-- Docker Compose so the CLI does not need a host Node install
+- Ctrl-C during a turn cancels (including a running command) and returns to the prompt; Ctrl-C on an empty prompt quits
+- Tools: `list_dir`, `read_file`, `write_file`, `run_command` on the current working directory
+- `write_file` and `run_command` require typing `y` (not `yes`)
+- `run_command` takes `argv` (an array). There is no shell (`no sh -c`, no pipes)
+- Commands time out after 30 seconds and capture at most 32 KiB of output
+- Path-style programs must stay inside the workspace; bare names (`npm`, `node`, `git`) use PATH
+- Docker Compose so the CLI does not need a host Node install; the CLI process in Docker is not root
 
 What does not work yet:
 
-- Shell / command execution
+- Unrestricted shell
 - Web navigation
 - Search
 - Providers other than Ollama
@@ -80,7 +83,7 @@ npm start
 
 ## Run (Docker — OS-agnostic)
 
-Ollama still runs on the host. The container only provides Node.
+Ollama still runs on the host. The container only provides Node. The Compose CLI runs as the `node` user (non-root). The workspace is the bind-mount at `/app`.
 
 ```
 docker compose build
@@ -104,7 +107,7 @@ The Compose service is interactive (`stdin_open` / `tty`). Use `-T` only for non
 | `/model` | List models installed in Ollama |
 | `/model <name>` | Switch model for this session |
 | `/exit` | Quit |
-| Ctrl-C | Cancel the current turn; quit when the prompt is idle |
+| Ctrl-C | Cancel the current turn (kills an in-flight command); quit when the prompt is idle |
 
 ## Tools
 
@@ -113,6 +116,7 @@ The Compose service is interactive (`stdin_open` / `tty`). Use `-T` only for non
 | `list_dir` | List a directory (not recursive) | auto |
 | `read_file` | Read a UTF-8 file (max 256 KiB) | auto |
 | `write_file` | Create or overwrite a UTF-8 file | `y/N` each time |
+| `run_command` | Run a program in cwd (`argv`, no shell) | `y/N` each time |
 
 ## Example
 
@@ -131,6 +135,14 @@ tool: write_file {"path":"LICENSE"}
 Allow write to LICENSE (1085 bytes)? [y/N]
 y
 Wrote 1104 bytes to LICENSE
+> run node -e "console.log('hi')"
+tool: run_command {"argv":["node","-e","console.log('hi')"]}
+Allow command ["node","-e","console.log('hi')"]? [y/N]
+y
+exit 0
+stdout:
+hi
+stderr:
 > /clear
 Conversation cleared.
 > /exit
@@ -140,6 +152,14 @@ A write you refuse:
 
 ```
 Allow write to LICENSE (1085 bytes)? [y/N]
+n
+denied
+```
+
+A command you refuse:
+
+```
+Allow command ["npm","test"]? [y/N]
 n
 denied
 ```
