@@ -104,7 +104,7 @@ describe("runTurn", () => {
     assert.ok(tools);
     assert.deepEqual(
       tools.map((tool) => tool.function.name),
-      ["list_dir", "read_file", "write_file"],
+      ["list_dir", "read_file", "write_file", "run_command"],
     );
   });
 
