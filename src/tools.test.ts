@@ -34,10 +34,18 @@ function tool(name: string) {
 }
 
 describe("createTools", () => {
-  it("returns tools named list_dir, read_file, grep, write_file, str_replace, and run_command", () => {
+  it("returns tools named list_dir, read_file, grep, write_file, str_replace, delete_file, and run_command", () => {
     assert.deepEqual(
       createTools().map((entry) => entry.name),
-      ["list_dir", "read_file", "grep", "write_file", "str_replace", "run_command"],
+      [
+        "list_dir",
+        "read_file",
+        "grep",
+        "write_file",
+        "str_replace",
+        "delete_file",
+        "run_command",
+      ],
     );
   });
 
@@ -615,6 +623,146 @@ describe("str_replace", () => {
       assert.match(result, /path escapes workspace/);
       assert.equal(called, 0);
       assert.equal(fs.readFileSync(path.join(base, "outside.ts"), "utf8"), "secret\n");
+    });
+  });
+});
+
+describe("delete_file", () => {
+  function deleteTool() {
+    return tool("delete_file");
+  }
+
+  it("confirm true unlinks the file", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "x");
+      const result = await deleteTool().execute(
+        { path: "a.txt" },
+        { workspaceRoot: root, confirm: async () => true },
+      );
+      assert.equal(result, "Deleted a.txt");
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), false);
+    });
+  });
+
+  it("confirm false leaves the file", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "x");
+      const result = await deleteTool().execute(
+        { path: "a.txt" },
+        { workspaceRoot: root, confirm: async () => false },
+      );
+      assert.equal(result, "User denied delete of a.txt.");
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), true);
+    });
+  });
+
+  it("missing confirm is denied and does not unlink", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "x");
+      const result = await deleteTool().execute(
+        { path: "a.txt" },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "User denied delete of a.txt.");
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), true);
+    });
+  });
+
+  it("directory does not confirm and remains", async () => {
+    await withTree(async (root) => {
+      fs.mkdirSync(path.join(root, "sub"));
+      fs.writeFileSync(path.join(root, "sub", "f.txt"), "x");
+      let called = 0;
+      const result = await deleteTool().execute(
+        { path: "sub" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /Error: is a directory:/);
+      assert.equal(called, 0);
+      assert.equal(fs.existsSync(path.join(root, "sub", "f.txt")), true);
+    });
+  });
+
+  it("missing path does not confirm", async () => {
+    await withTree(async (root) => {
+      let called = 0;
+      const result = await deleteTool().execute(
+        { path: "gone.txt" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /Error: not found:/);
+      assert.equal(called, 0);
+    });
+  });
+
+  it("invalid args do not confirm", async () => {
+    await withTree(async (root) => {
+      let called = 0;
+      const result = await deleteTool().execute(
+        {},
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.equal(result, "Error: invalid arguments for delete_file");
+      assert.equal(called, 0);
+    });
+  });
+
+  it("symlink to a file inside the workspace is rejected", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "target.txt"), "keep");
+      fs.symlinkSync(path.join(root, "target.txt"), path.join(root, "link.txt"));
+      let called = 0;
+      const result = await deleteTool().execute(
+        { path: "link.txt" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /path escapes workspace/);
+      assert.equal(called, 0);
+      assert.equal(fs.readFileSync(path.join(root, "target.txt"), "utf8"), "keep");
+    });
+  });
+
+  it("escape path does not confirm", async () => {
+    await withTree(async (root, base) => {
+      fs.writeFileSync(path.join(base, "outside.txt"), "secret");
+      let called = 0;
+      const result = await deleteTool().execute(
+        { path: "../outside.txt" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /path escapes workspace/);
+      assert.equal(called, 0);
+      assert.equal(fs.existsSync(path.join(base, "outside.txt")), true);
     });
   });
 });

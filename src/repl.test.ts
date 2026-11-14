@@ -583,6 +583,103 @@ describe("runRepl", { concurrency: 1 }, () => {
     }
   });
 
+  it("REPL delete_file y unlinks the file", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-del-"));
+    fs.writeFileSync(path.join(root, "a.txt"), "x");
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    let round = 0;
+    const chatStream: ReplDeps["chatStream"] = async function* () {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "tool_calls",
+          calls: [
+            {
+              function: {
+                name: "delete_file",
+                arguments: { path: "a.txt" },
+              },
+            },
+          ],
+        };
+        return;
+      }
+      yield { type: "text", text: "done" };
+    };
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream,
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("delete it\n");
+      await waitFor(text, "Allow delete ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("y\n");
+      stream.push("/exit\n");
+      await done;
+      assert.match(text(), /Allow delete a.txt\? \[y\/N\]/);
+      assert.match(text(), /Deleted a.txt/);
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), false);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("REPL delete_file n leaves the file", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-del-n-"));
+    fs.writeFileSync(path.join(root, "a.txt"), "x");
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    let round = 0;
+    const chatStream: ReplDeps["chatStream"] = async function* () {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "tool_calls",
+          calls: [
+            {
+              function: {
+                name: "delete_file",
+                arguments: { path: "a.txt" },
+              },
+            },
+          ],
+        };
+        return;
+      }
+      yield { type: "text", text: "done" };
+    };
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream,
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("delete it\n");
+      await waitFor(text, "Allow delete ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("n\n");
+      await waitFor(text, /denied/);
+      stream.push("/exit\n");
+      await done;
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), true);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("confirmWrite allows only trimmed lowercase y", async () => {
     async function ask(answer: string): Promise<{ allowed: boolean; stdout: string }> {
       const { output, text } = collect();

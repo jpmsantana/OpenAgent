@@ -118,6 +118,23 @@ export async function confirmCommand(
   return askYesNo(rl, output, signal);
 }
 
+/** Ask y/N for a delete. Only trimmed lowercase `y` allows. Abort denies. */
+export async function confirmDelete(
+  rl: readline.Interface,
+  output: NodeJS.WritableStream,
+  info: ConfirmInfo,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) {
+    return false;
+  }
+  if (info.path === undefined) {
+    return false;
+  }
+  output.write(`Allow delete ${info.path}? [y/N]\n`);
+  return askYesNo(rl, output, signal);
+}
+
 /** Dispatch y/N by tool name. Unknown names are denied. */
 export async function confirm(
   rl: readline.Interface,
@@ -133,6 +150,9 @@ export async function confirm(
   }
   if (info.name === "str_replace") {
     return confirmReplace(rl, output, info, signal);
+  }
+  if (info.name === "delete_file") {
+    return confirmDelete(rl, output, info, signal);
   }
   return false;
 }

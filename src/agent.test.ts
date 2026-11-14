@@ -104,7 +104,15 @@ describe("runTurn", () => {
     assert.ok(tools);
     assert.deepEqual(
       tools.map((tool) => tool.function.name),
-      ["list_dir", "read_file", "grep", "write_file", "str_replace", "run_command"],
+      [
+        "list_dir",
+        "read_file",
+        "grep",
+        "write_file",
+        "str_replace",
+        "delete_file",
+        "run_command",
+      ],
     );
   });
 
