@@ -2,9 +2,9 @@ import type { ChatMessage, OllamaTool, ToolCall } from "./ollama.js";
 import type { Tool, ToolContext } from "./tools.js";
 
 export const AGENT_SYSTEM_PROMPT =
-  "You are OpenAgent, a local coding assistant. The workspace is the current working directory. Use the provided tools to inspect and edit files. Never guess file contents; read them. Use run_command only to run programs such as tests, builds, and git. Pass argv as an array; there is no shell. You have no network tool.";
+  "You are OpenAgent, a local coding assistant. The workspace is the current working directory. Use grep to find text; do not walk the tree with list_dir when a pattern search will do. Use the provided tools to inspect and edit files. Never guess file contents; read them. Use run_command only to run programs such as tests, builds, and git. Pass argv as an array; there is no shell. You have no network tool.";
 
-export const MAX_TOOL_ROUNDS = 8;
+export const MAX_TOOL_ROUNDS = 16;
 
 export type RunTurnDeps = {
   host: string;

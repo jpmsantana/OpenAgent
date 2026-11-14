@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { formatCommandResult } from "./exec.ts";
-import { createTools, READ_MAX_BYTES } from "./tools.ts";
+import {
+  createTools,
+  GREP_MAX_MATCHES,
+  READ_MAX_BYTES,
+} from "./tools.ts";
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "oa-tool-"));
@@ -23,16 +27,17 @@ async function withTree(
   }
 }
 
-function tools() {
-  const [listDir, readFile, writeFile] = createTools();
-  return { listDir, readFile, writeFile };
+function tool(name: string) {
+  const found = createTools().find((entry) => entry.name === name);
+  assert.ok(found, name);
+  return found;
 }
 
 describe("createTools", () => {
-  it("returns tools named list_dir, read_file, write_file, and run_command", () => {
+  it("returns tools named list_dir, read_file, grep, write_file, and run_command", () => {
     assert.deepEqual(
-      createTools().map((tool) => tool.name),
-      ["list_dir", "read_file", "write_file", "run_command"],
+      createTools().map((entry) => entry.name),
+      ["list_dir", "read_file", "grep", "write_file", "run_command"],
     );
   });
 
@@ -40,7 +45,7 @@ describe("createTools", () => {
     await withTree(async (root) => {
       fs.writeFileSync(path.join(root, "a.txt"), "hi");
       fs.mkdirSync(path.join(root, "sub"));
-      const { listDir } = tools();
+      const listDir = tool("list_dir");
       const parsed = JSON.parse(
         await listDir.execute({ path: "." }, { workspaceRoot: root }),
       ) as {
@@ -63,7 +68,7 @@ describe("createTools", () => {
   it("list_dir default path lists the workspace root", async () => {
     await withTree(async (root) => {
       fs.writeFileSync(path.join(root, "root.txt"), "x");
-      const { listDir } = tools();
+      const listDir = tool("list_dir");
       const parsed = JSON.parse(
         await listDir.execute({}, { workspaceRoot: root }),
       ) as { path: string; entries: { name: string }[] };
@@ -75,7 +80,7 @@ describe("createTools", () => {
   it("list_dir on a file → Error: not a directory", async () => {
     await withTree(async (root) => {
       fs.writeFileSync(path.join(root, "a.txt"), "hi");
-      const { listDir } = tools();
+      const listDir = tool("list_dir");
       const result = await listDir.execute(
         { path: "a.txt" },
         { workspaceRoot: root },
@@ -87,7 +92,7 @@ describe("createTools", () => {
   it("list_dir on ../secret → Error: path escapes workspace", async () => {
     await withTree(async (root, base) => {
       fs.writeFileSync(path.join(base, "secret"), "nope");
-      const { listDir } = tools();
+      const listDir = tool("list_dir");
       const result = await listDir.execute(
         { path: "../secret" },
         { workspaceRoot: root },
@@ -99,7 +104,7 @@ describe("createTools", () => {
   it("read_file returns exact contents", async () => {
     await withTree(async (root) => {
       fs.writeFileSync(path.join(root, "a.txt"), "hello\nworld");
-      const { readFile } = tools();
+      const readFile = tool("read_file");
       const result = await readFile.execute(
         { path: "a.txt" },
         { workspaceRoot: root },
@@ -110,7 +115,7 @@ describe("createTools", () => {
 
   it("read_file missing → Error: not found", async () => {
     await withTree(async (root) => {
-      const { readFile } = tools();
+      const readFile = tool("read_file");
       const result = await readFile.execute(
         { path: "missing.txt" },
         { workspaceRoot: root },
@@ -122,7 +127,7 @@ describe("createTools", () => {
   it("read_file directory → Error: is a directory", async () => {
     await withTree(async (root) => {
       fs.mkdirSync(path.join(root, "sub"));
-      const { readFile } = tools();
+      const readFile = tool("read_file");
       const result = await readFile.execute(
         { path: "sub" },
         { workspaceRoot: root },
@@ -137,7 +142,7 @@ describe("createTools", () => {
         path.join(root, "big.bin"),
         Buffer.alloc(READ_MAX_BYTES + 1),
       );
-      const { readFile } = tools();
+      const readFile = tool("read_file");
       const result = await readFile.execute(
         { path: "big.bin" },
         { workspaceRoot: root },
@@ -149,7 +154,7 @@ describe("createTools", () => {
   it("read_file a file containing NUL → Error: binary file", async () => {
     await withTree(async (root) => {
       fs.writeFileSync(path.join(root, "bin.dat"), Buffer.from("a\0b"));
-      const { readFile } = tools();
+      const readFile = tool("read_file");
       const result = await readFile.execute(
         { path: "bin.dat" },
         { workspaceRoot: root },
@@ -161,7 +166,7 @@ describe("createTools", () => {
   it("read_file ../outside → Error: path escapes workspace", async () => {
     await withTree(async (root, base) => {
       fs.writeFileSync(path.join(base, "outside"), "nope");
-      const { readFile } = tools();
+      const readFile = tool("read_file");
       const result = await readFile.execute(
         { path: "../outside" },
         { workspaceRoot: root },
@@ -174,7 +179,7 @@ describe("createTools", () => {
 describe("write_file", () => {
   it("confirm true creates the file with exact contents", async () => {
     await withTree(async (root) => {
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       const result = await writeFile.execute(
         { path: "a.txt", content: "hello" },
         { workspaceRoot: root, confirm: async () => true },
@@ -187,7 +192,7 @@ describe("write_file", () => {
 
   it("confirm false does not create the file", async () => {
     await withTree(async (root) => {
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       const result = await writeFile.execute(
         { path: "a.txt", content: "hello" },
         { workspaceRoot: root, confirm: async () => false },
@@ -199,7 +204,7 @@ describe("write_file", () => {
 
   it("missing confirm is denied and does not write", async () => {
     await withTree(async (root) => {
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       const result = await writeFile.execute(
         { path: "a.txt", content: "hello" },
         { workspaceRoot: root },
@@ -211,7 +216,7 @@ describe("write_file", () => {
 
   it("../outside.txt → Error: path escapes workspace, confirm not called", async () => {
     await withTree(async (root, base) => {
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       let called = 0;
       const result = await writeFile.execute(
         { path: "../outside.txt", content: "nope" },
@@ -232,7 +237,7 @@ describe("write_file", () => {
   it("overwrites an existing file after true", async () => {
     await withTree(async (root) => {
       fs.writeFileSync(path.join(root, "a.txt"), "old");
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       const result = await writeFile.execute(
         { path: "a.txt", content: "new" },
         { workspaceRoot: root, confirm: async () => true },
@@ -244,7 +249,7 @@ describe("write_file", () => {
 
   it("creates parent directory a/b/c.txt after true", async () => {
     await withTree(async (root) => {
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       const result = await writeFile.execute(
         { path: "a/b/c.txt", content: "nested" },
         { workspaceRoot: root, confirm: async () => true },
@@ -259,7 +264,7 @@ describe("write_file", () => {
 
   it("content of READ_MAX_BYTES + 1 → file too large, confirm not called", async () => {
     await withTree(async (root) => {
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       let called = 0;
       const result = await writeFile.execute(
         { path: "big.txt", content: "x".repeat(READ_MAX_BYTES + 1) },
@@ -280,7 +285,7 @@ describe("write_file", () => {
   it("path is an existing directory → Error: is a directory", async () => {
     await withTree(async (root) => {
       fs.mkdirSync(path.join(root, "sub"));
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       let called = 0;
       const result = await writeFile.execute(
         { path: "sub", content: "x" },
@@ -302,7 +307,7 @@ describe("write_file", () => {
       const outside = path.join(base, "secret");
       fs.symlinkSync(outside, path.join(root, "link"));
       let called = 0;
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       const result = await writeFile.execute(
         { path: "link", content: "pwn" },
         {
@@ -321,7 +326,7 @@ describe("write_file", () => {
 
   it("invalid arguments when path or content is missing", async () => {
     await withTree(async (root) => {
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       assert.equal(
         await writeFile.execute({ content: "x" }, { workspaceRoot: root }),
         "Error: invalid arguments for write_file",
@@ -335,7 +340,7 @@ describe("write_file", () => {
 
   it("empty content is allowed", async () => {
     await withTree(async (root) => {
-      const { writeFile } = tools();
+      const writeFile = tool("write_file");
       const result = await writeFile.execute(
         { path: "empty.txt", content: "" },
         { workspaceRoot: root, confirm: async () => true },
@@ -348,9 +353,7 @@ describe("write_file", () => {
 
 describe("run_command", () => {
   function runTool() {
-    const tool = createTools().find((entry) => entry.name === "run_command");
-    assert.ok(tool);
-    return tool;
+    return tool("run_command");
   }
 
   it("confirm true calls run and formats the result", async () => {
@@ -492,6 +495,227 @@ describe("run_command", () => {
       );
       assert.match(result, /path escapes workspace/);
       assert.equal(fs.existsSync(marker), false);
+    });
+  });
+});
+
+describe("grep", () => {
+  function grepTool() {
+    return tool("grep");
+  }
+
+  it("returns path:line:text hits in walk order", async () => {
+    await withTree(async (root) => {
+      fs.mkdirSync(path.join(root, "src"));
+      fs.writeFileSync(path.join(root, "src", "a.ts"), "first\nfoo\n");
+      fs.writeFileSync(path.join(root, "src", "b.ts"), "foo\n");
+      let confirmed = 0;
+      const result = await grepTool().execute(
+        { pattern: "foo" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            confirmed += 1;
+            return true;
+          },
+        },
+      );
+      const aRel = path.relative(root, path.join(root, "src", "a.ts"));
+      const bRel = path.relative(root, path.join(root, "src", "b.ts"));
+      assert.equal(result, `${aRel}:2:foo\n${bRel}:1:foo`);
+      assert.equal(confirmed, 0);
+    });
+  });
+
+  it("skips node_modules when descending", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "hit.txt"), "SECRET\n");
+      fs.mkdirSync(path.join(root, "node_modules"));
+      fs.writeFileSync(path.join(root, "node_modules", "hidden.txt"), "SECRET\n");
+      const result = await grepTool().execute(
+        { pattern: "SECRET" },
+        { workspaceRoot: root },
+      );
+      const hitRel = path.relative(root, path.join(root, "hit.txt"));
+      assert.equal(result, `${hitRel}:1:SECRET`);
+      assert.equal(result.includes("hidden"), false);
+      assert.equal(result.includes("node_modules"), false);
+    });
+  });
+
+  it("skips .git and dist when descending", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "keep.txt"), "TOKEN\n");
+      fs.mkdirSync(path.join(root, ".git"));
+      fs.writeFileSync(path.join(root, ".git", "hidden.txt"), "TOKEN\n");
+      fs.mkdirSync(path.join(root, "dist"));
+      fs.writeFileSync(path.join(root, "dist", "hidden.txt"), "TOKEN\n");
+      const result = await grepTool().execute(
+        { pattern: "TOKEN" },
+        { workspaceRoot: root },
+      );
+      const keepRel = path.relative(root, path.join(root, "keep.txt"));
+      assert.equal(result, `${keepRel}:1:TOKEN`);
+      assert.equal(result.includes(".git"), false);
+      assert.equal(result.includes("dist"), false);
+    });
+  });
+
+  it("searches an explicit node_modules path", async () => {
+    await withTree(async (root) => {
+      fs.mkdirSync(path.join(root, "node_modules"));
+      fs.writeFileSync(path.join(root, "node_modules", "pkg.txt"), "INSIDE\n");
+      const result = await grepTool().execute(
+        { pattern: "INSIDE", path: "node_modules" },
+        { workspaceRoot: root },
+      );
+      const rel = path.relative(
+        root,
+        path.join(root, "node_modules", "pkg.txt"),
+      );
+      assert.equal(result, `${rel}:1:INSIDE`);
+    });
+  });
+
+  it("caps at GREP_MAX_MATCHES and marks truncated", async () => {
+    await withTree(async (root) => {
+      const lines = Array.from({ length: 60 }, () => "x");
+      fs.writeFileSync(path.join(root, "lots.txt"), `${lines.join("\n")}\n`);
+      const result = await grepTool().execute(
+        { pattern: "x" },
+        { workspaceRoot: root },
+      );
+      const rel = path.relative(root, path.join(root, "lots.txt"));
+      const matchLines = result
+        .split("\n")
+        .filter((line) => line !== "" && line !== "[truncated]");
+      assert.equal(matchLines.length, GREP_MAX_MATCHES);
+      assert.equal(matchLines[0], `${rel}:1:x`);
+      assert.equal(matchLines[GREP_MAX_MATCHES - 1], `${rel}:${GREP_MAX_MATCHES}:x`);
+      assert.match(result, /\[truncated\]/);
+    });
+  });
+
+  it("case_insensitive matches when true", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "note.txt"), "Foo\n");
+      const sensitive = await grepTool().execute(
+        { pattern: "foo" },
+        { workspaceRoot: root },
+      );
+      assert.equal(sensitive, "No matches.");
+      const insensitive = await grepTool().execute(
+        { pattern: "foo", case_insensitive: true },
+        { workspaceRoot: root },
+      );
+      const rel = path.relative(root, path.join(root, "note.txt"));
+      assert.equal(insensitive, `${rel}:1:Foo`);
+    });
+  });
+
+  it("invalid regex returns Error: invalid regex", async () => {
+    await withTree(async (root) => {
+      const result = await grepTool().execute(
+        { pattern: "[" },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "Error: invalid regex");
+    });
+  });
+
+  it("invalid arguments for missing, empty, or bad case_insensitive", async () => {
+    await withTree(async (root) => {
+      const grep = grepTool();
+      assert.equal(
+        await grep.execute({}, { workspaceRoot: root }),
+        "Error: invalid arguments for grep",
+      );
+      assert.equal(
+        await grep.execute({ pattern: "" }, { workspaceRoot: root }),
+        "Error: invalid arguments for grep",
+      );
+      assert.equal(
+        await grep.execute(
+          { pattern: "a", case_insensitive: "yes" },
+          { workspaceRoot: root },
+        ),
+        "Error: invalid arguments for grep",
+      );
+    });
+  });
+
+  it("path escape → Error: path escapes workspace", async () => {
+    await withTree(async (root, base) => {
+      fs.writeFileSync(path.join(base, "outside"), "secret\n");
+      const result = await grepTool().execute(
+        { pattern: "secret", path: "../outside" },
+        { workspaceRoot: root },
+      );
+      assert.match(result, /path escapes workspace/);
+    });
+  });
+
+  it("missing path → Error: not found", async () => {
+    await withTree(async (root) => {
+      const result = await grepTool().execute(
+        { pattern: "a", path: "nope" },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "Error: not found: nope");
+    });
+  });
+
+  it("skips binary files that contain the pattern", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "bin.dat"), Buffer.from("foo\0bar"));
+      const result = await grepTool().execute(
+        { pattern: "foo" },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "No matches.");
+    });
+  });
+
+  it("path to a single file does not search siblings", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "only.txt"), "foo\n");
+      fs.writeFileSync(path.join(root, "other.txt"), "foo\n");
+      const result = await grepTool().execute(
+        { pattern: "foo", path: "only.txt" },
+        { workspaceRoot: root },
+      );
+      const rel = path.relative(root, path.join(root, "only.txt"));
+      assert.equal(result, `${rel}:1:foo`);
+      assert.equal(result.includes("other"), false);
+    });
+  });
+
+  it("no matches returns No matches.", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "hello\n");
+      const result = await grepTool().execute(
+        { pattern: "zzz" },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "No matches.");
+    });
+  });
+
+  it("already-aborted signal rejects with AbortError", async () => {
+    await withTree(async (root) => {
+      const abort = new AbortController();
+      abort.abort();
+      await assert.rejects(
+        () =>
+          grepTool().execute(
+            { pattern: "a" },
+            { workspaceRoot: root, signal: abort.signal },
+          ),
+        (err: unknown) => {
+          assert.equal((err as Error).name, "AbortError");
+          return true;
+        },
+      );
     });
   });
 });
