@@ -5,6 +5,10 @@ import {
   OllamaError,
   type ChatMessage,
 } from "./ollama.js";
+import {
+  SessionAllowlist,
+  type FileAllowKind,
+} from "./permissions.js";
 import type { ConfirmInfo, Tool } from "./tools.js";
 
 export type ReplDeps = {
@@ -18,13 +22,65 @@ export type ReplDeps = {
   tools: Tool[];
 };
 
-async function askYesNo(
+type PermissionReply = { allowed: boolean; grant: boolean };
+
+function fileKind(name: string): FileAllowKind | undefined {
+  if (
+    name === "write_file" ||
+    name === "str_replace" ||
+    name === "delete_file"
+  ) {
+    return name;
+  }
+  return undefined;
+}
+
+function alreadyAllowed(
+  info: ConfirmInfo,
+  allowlist?: SessionAllowlist,
+): boolean {
+  if (allowlist === undefined) {
+    return false;
+  }
+  const kind = fileKind(info.name);
+  if (kind !== undefined && info.path !== undefined && info.path !== "") {
+    return allowlist.allowsFile(kind, info.path);
+  }
+  if (
+    info.name === "run_command" &&
+    info.argv !== undefined &&
+    info.argv.length > 0
+  ) {
+    return allowlist.allowsCommand(info.argv);
+  }
+  return false;
+}
+
+function applyGrant(info: ConfirmInfo, allowlist?: SessionAllowlist): void {
+  if (allowlist === undefined) {
+    return;
+  }
+  const kind = fileKind(info.name);
+  if (kind !== undefined && info.path !== undefined && info.path !== "") {
+    allowlist.grantFile(kind, info.path);
+    return;
+  }
+  if (
+    info.name === "run_command" &&
+    info.argv !== undefined &&
+    info.argv.length > 0
+  ) {
+    allowlist.grantCommand(info.argv);
+  }
+}
+
+async function askPermission(
   rl: readline.Interface,
   output: NodeJS.WritableStream,
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<PermissionReply> {
   if (signal?.aborted) {
-    return false;
+    return { allowed: false, grant: false };
   }
   const answer = await new Promise<string>((resolve) => {
     let settled = false;
@@ -50,21 +106,26 @@ async function askYesNo(
     }
   });
   if (signal?.aborted) {
-    return false;
+    return { allowed: false, grant: false };
   }
-  const allowed = answer.trim().toLowerCase() === "y";
-  if (!allowed) {
-    output.write("denied\n");
+  const token = answer.trim();
+  if (token === "y") {
+    return { allowed: true, grant: false };
   }
-  return allowed;
+  if (token === "a") {
+    return { allowed: true, grant: true };
+  }
+  output.write("denied\n");
+  return { allowed: false, grant: false };
 }
 
-/** Ask y/N for a write. Only trimmed lowercase `y` allows. Abort denies. */
+/** Ask y/N/a for a write. Trimmed `y` allows once; `a` grants. Abort denies. */
 export async function confirmWrite(
   rl: readline.Interface,
   output: NodeJS.WritableStream,
   info: ConfirmInfo,
   signal?: AbortSignal,
+  allowlist?: SessionAllowlist,
 ): Promise<boolean> {
   if (signal?.aborted) {
     return false;
@@ -73,21 +134,26 @@ export async function confirmWrite(
     return false;
   }
   const bytes = info.bytes ?? 0;
-  output.write(`Allow write to ${info.path} (${bytes} bytes)? [y/N]\n`);
+  output.write(`Allow write to ${info.path} (${bytes} bytes)? [y/N/a]\n`);
   if (info.preview !== "") {
     for (const line of info.preview.split("\n")) {
       output.write(`  ${line}\n`);
     }
   }
-  return askYesNo(rl, output, signal);
+  const reply = await askPermission(rl, output, signal);
+  if (reply.grant) {
+    applyGrant(info, allowlist);
+  }
+  return reply.allowed;
 }
 
-/** Ask y/N for a replace. Only trimmed lowercase `y` allows. Abort denies. */
+/** Ask y/N/a for a replace. Trimmed `y` allows once; `a` grants. Abort denies. */
 export async function confirmReplace(
   rl: readline.Interface,
   output: NodeJS.WritableStream,
   info: ConfirmInfo,
   signal?: AbortSignal,
+  allowlist?: SessionAllowlist,
 ): Promise<boolean> {
   if (signal?.aborted) {
     return false;
@@ -95,35 +161,45 @@ export async function confirmReplace(
   if (info.path === undefined) {
     return false;
   }
-  output.write(`Allow replace in ${info.path}? [y/N]\n`);
+  output.write(`Allow replace in ${info.path}? [y/N/a]\n`);
   if (info.preview !== "") {
     for (const line of info.preview.split("\n")) {
       output.write(`  ${line}\n`);
     }
   }
-  return askYesNo(rl, output, signal);
+  const reply = await askPermission(rl, output, signal);
+  if (reply.grant) {
+    applyGrant(info, allowlist);
+  }
+  return reply.allowed;
 }
 
-/** Ask y/N for a command. Only trimmed lowercase `y` allows. Abort denies. */
+/** Ask y/N/a for a command. Trimmed `y` allows once; `a` grants. Abort denies. */
 export async function confirmCommand(
   rl: readline.Interface,
   output: NodeJS.WritableStream,
   info: ConfirmInfo,
   signal?: AbortSignal,
+  allowlist?: SessionAllowlist,
 ): Promise<boolean> {
   if (signal?.aborted) {
     return false;
   }
-  output.write(`Allow command ${info.preview}? [y/N]\n`);
-  return askYesNo(rl, output, signal);
+  output.write(`Allow command ${info.preview}? [y/N/a]\n`);
+  const reply = await askPermission(rl, output, signal);
+  if (reply.grant) {
+    applyGrant(info, allowlist);
+  }
+  return reply.allowed;
 }
 
-/** Ask y/N for a delete. Only trimmed lowercase `y` allows. Abort denies. */
+/** Ask y/N/a for a delete. Trimmed `y` allows once; `a` grants. Abort denies. */
 export async function confirmDelete(
   rl: readline.Interface,
   output: NodeJS.WritableStream,
   info: ConfirmInfo,
   signal?: AbortSignal,
+  allowlist?: SessionAllowlist,
 ): Promise<boolean> {
   if (signal?.aborted) {
     return false;
@@ -131,28 +207,36 @@ export async function confirmDelete(
   if (info.path === undefined) {
     return false;
   }
-  output.write(`Allow delete ${info.path}? [y/N]\n`);
-  return askYesNo(rl, output, signal);
+  output.write(`Allow delete ${info.path}? [y/N/a]\n`);
+  const reply = await askPermission(rl, output, signal);
+  if (reply.grant) {
+    applyGrant(info, allowlist);
+  }
+  return reply.allowed;
 }
 
-/** Dispatch y/N by tool name. Unknown names are denied. */
+/** Dispatch y/N/a by tool name. Unknown names are denied. Session grants skip the prompt. */
 export async function confirm(
   rl: readline.Interface,
   output: NodeJS.WritableStream,
   info: ConfirmInfo,
   signal?: AbortSignal,
+  allowlist?: SessionAllowlist,
 ): Promise<boolean> {
+  if (alreadyAllowed(info, allowlist)) {
+    return true;
+  }
   if (info.name === "write_file") {
-    return confirmWrite(rl, output, info, signal);
+    return confirmWrite(rl, output, info, signal, allowlist);
   }
   if (info.name === "run_command") {
-    return confirmCommand(rl, output, info, signal);
+    return confirmCommand(rl, output, info, signal, allowlist);
   }
   if (info.name === "str_replace") {
-    return confirmReplace(rl, output, info, signal);
+    return confirmReplace(rl, output, info, signal, allowlist);
   }
   if (info.name === "delete_file") {
-    return confirmDelete(rl, output, info, signal);
+    return confirmDelete(rl, output, info, signal, allowlist);
   }
   return false;
 }
@@ -192,6 +276,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
   });
   const messages: ChatMessage[] = [];
   const chat: { abort?: AbortController } = {};
+  const allowlist = new SessionAllowlist();
   let quitting = false;
 
   function quit(): void {
@@ -236,7 +321,8 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         currentModel,
         chat,
         quit,
-        (info) => confirm(rl, deps.output, info, chat.abort?.signal),
+        (info) =>
+          confirm(rl, deps.output, info, chat.abort?.signal, allowlist),
       );
       if (open && !quitting) {
         rl.prompt();
