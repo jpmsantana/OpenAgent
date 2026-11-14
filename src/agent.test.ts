@@ -104,7 +104,7 @@ describe("runTurn", () => {
     assert.ok(tools);
     assert.deepEqual(
       tools.map((tool) => tool.function.name),
-      ["list_dir", "read_file", "write_file", "run_command"],
+      ["list_dir", "read_file", "grep", "write_file", "run_command"],
     );
   });
 
@@ -217,7 +217,7 @@ describe("runTurn", () => {
     assert.equal(calls.length, 2);
   });
 
-  it("round cap: 8 list_dir chats then stop, no 9th", async () => {
+  it("round cap: MAX_TOOL_ROUNDS list_dir chats then stop, no extra round", async () => {
     const { output } = collect();
     const messages: ChatMessage[] = [{ role: "user", content: "loop" }];
     const calls: ChatCall[] = [];
@@ -236,7 +236,10 @@ describe("runTurn", () => {
       messages.filter((message) => message.role === "tool").length,
       MAX_TOOL_ROUNDS,
     );
-    assert.match(stderr, /Stopped after 8 tool rounds/);
+    assert.match(
+      stderr,
+      new RegExp(`Stopped after ${MAX_TOOL_ROUNDS} tool rounds`),
+    );
   });
 
   it("system prompt is prepended once across two runTurn calls", async () => {
