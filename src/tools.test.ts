@@ -174,6 +174,93 @@ describe("createTools", () => {
       assert.match(result, /Error: path escapes workspace/);
     });
   });
+
+  it("offset and limit return a line window with a header", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "l1\nl2\nl3\nl4\n");
+      const readFile = tool("read_file");
+      const result = await readFile.execute(
+        { path: "a.txt", offset: 2, limit: 2 },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "lines 2-3 of 4\nl2\nl3");
+    });
+  });
+
+  it("offset without limit reads through the last line", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "l1\nl2\nl3\nl4\n");
+      const readFile = tool("read_file");
+      const result = await readFile.execute(
+        { path: "a.txt", offset: 3 },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "lines 3-4 of 4\nl3\nl4");
+    });
+  });
+
+  it("limit without offset starts at line 1", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "l1\nl2\nl3\nl4\n");
+      const readFile = tool("read_file");
+      const result = await readFile.execute(
+        { path: "a.txt", limit: 1 },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "lines 1-1 of 4\nl1");
+    });
+  });
+
+  it("offset past the end returns lines 0-0 of total", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "l1\nl2\nl3\nl4\n");
+      const readFile = tool("read_file");
+      const result = await readFile.execute(
+        { path: "a.txt", offset: 99, limit: 1 },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "lines 0-0 of 4\n");
+    });
+  });
+
+  it("invalid offset or limit → Error: invalid arguments for read_file", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), "l1\n");
+      const readFile = tool("read_file");
+      const ctx = { workspaceRoot: root };
+      assert.equal(
+        await readFile.execute({ path: "a.txt", offset: 0 }, ctx),
+        "Error: invalid arguments for read_file",
+      );
+      assert.equal(
+        await readFile.execute({ path: "a.txt", offset: 1.5 }, ctx),
+        "Error: invalid arguments for read_file",
+      );
+      assert.equal(
+        await readFile.execute({ path: "a.txt", limit: -1 }, ctx),
+        "Error: invalid arguments for read_file",
+      );
+      assert.equal(
+        await readFile.execute({ path: "a.txt", offset: "1" }, ctx),
+        "Error: invalid arguments for read_file",
+      );
+    });
+  });
+
+  it("window still rejects files larger than READ_MAX_BYTES", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(
+        path.join(root, "big.bin"),
+        Buffer.alloc(READ_MAX_BYTES + 1),
+      );
+      const readFile = tool("read_file");
+      const result = await readFile.execute(
+        { path: "big.bin", offset: 1, limit: 1 },
+        { workspaceRoot: root },
+      );
+      assert.match(result, /Error: file too large/);
+    });
+  });
 });
 
 describe("write_file", () => {

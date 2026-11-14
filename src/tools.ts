@@ -130,6 +130,20 @@ async function readFile(
   if (userPath === undefined) {
     return "Error: invalid arguments for read_file";
   }
+  let offset: number | undefined;
+  if (args.offset !== undefined) {
+    if (!isPositiveInt(args.offset)) {
+      return "Error: invalid arguments for read_file";
+    }
+    offset = args.offset;
+  }
+  let limit: number | undefined;
+  if (args.limit !== undefined) {
+    if (!isPositiveInt(args.limit)) {
+      return "Error: invalid arguments for read_file";
+    }
+    limit = args.limit;
+  }
   try {
     const resolved = resolveWorkspacePath(ctx.workspaceRoot, userPath);
     let st: Awaited<ReturnType<typeof fs.stat>>;
@@ -151,7 +165,19 @@ async function readFile(
     if (buf.includes(0)) {
       return `Error: binary file: ${userPath}`;
     }
-    return buf.toString("utf8");
+    const text = buf.toString("utf8");
+    if (offset === undefined && limit === undefined) {
+      return text;
+    }
+    const start = offset ?? 1;
+    const lines = splitLines(text);
+    const total = lines.length;
+    if (start > total) {
+      return `lines 0-0 of ${total}\n`;
+    }
+    const end = limit !== undefined ? Math.min(total, start + limit - 1) : total;
+    const slice = lines.slice(start - 1, end).join("\n");
+    return `lines ${start}-${end} of ${total}\n${slice}`;
   } catch (err) {
     return toolError(err);
   }
@@ -172,12 +198,16 @@ type GrepState = {
   truncated: boolean;
 };
 
-function splitGrepLines(text: string): string[] {
+function splitLines(text: string): string[] {
   const lines = text.split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") {
     lines.pop();
   }
   return lines;
+}
+
+function isPositiveInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1;
 }
 
 function formatGrepLine(line: string): string {
@@ -219,7 +249,7 @@ async function grepFile(filePath: string, state: GrepState): Promise<void> {
     return;
   }
   const relPath = path.relative(state.rootReal, filePath) || ".";
-  const lines = splitGrepLines(buf.toString("utf8"));
+  const lines = splitLines(buf.toString("utf8"));
   for (let i = 0; i < lines.length; i++) {
     if (state.regex.test(lines[i])) {
       if (state.matches.length >= GREP_MAX_MATCHES) {
@@ -483,11 +513,19 @@ export function createTools(): Tool[] {
     {
       name: "read_file",
       description:
-        "Read a UTF-8 text file inside the workspace. Fails on missing files, directories, binaries, or files larger than 262144 bytes.",
+        "Read a UTF-8 text file inside the workspace. Optional offset (1-based line) and limit window the result. Fails on missing files, directories, binaries, or files larger than 262144 bytes.",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string" },
+          offset: {
+            type: "number",
+            description: "1-based line to start reading. Optional.",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of lines to return. Optional.",
+          },
         },
         required: ["path"],
       },
