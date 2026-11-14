@@ -2,7 +2,7 @@ import type { ChatMessage, OllamaTool, ToolCall } from "./ollama.js";
 import type { Tool, ToolContext } from "./tools.js";
 
 export const AGENT_SYSTEM_PROMPT =
-  "You are OpenAgent, a local coding assistant. The workspace is the current working directory. Use grep to find text; do not walk the tree with list_dir when a pattern search will do. Use read_file to inspect files; pass offset (1-based line) and limit to read a line window. Never guess file contents. Use run_command only to run programs such as tests, builds, and git. Pass argv as an array; there is no shell. You have no network tool.";
+  "You are OpenAgent, a local coding assistant. The workspace is the current working directory. Use grep to find text; do not walk the tree with list_dir when a pattern search will do. Use read_file to inspect files; pass offset (1-based line) and limit to read a line window. Never guess file contents. Prefer str_replace to change an existing file; use write_file to create a new file or replace an entire file. Use run_command only to run programs such as tests, builds, and git. Pass argv as an array; there is no shell. You have no network tool.";
 
 export const MAX_TOOL_ROUNDS = 16;
 
@@ -34,6 +34,13 @@ function rethrowIfAbort(err: unknown, signal?: AbortSignal): void {
   signal?.throwIfAborted();
 }
 
+function truncatedField(value: unknown): unknown {
+  if (typeof value === "string" && value.length > 80) {
+    return `<truncated ${Buffer.byteLength(value, "utf8")} bytes>`;
+  }
+  return value;
+}
+
 function toolCallLine(name: string, args: Record<string, unknown>): string {
   let printed: unknown = args;
   if (
@@ -44,6 +51,16 @@ function toolCallLine(name: string, args: Record<string, unknown>): string {
     printed = {
       path: args.path,
       content: `<truncated ${Buffer.byteLength(args.content, "utf8")} bytes>`,
+    };
+  } else if (
+    name === "str_replace" &&
+    ((typeof args.old_string === "string" && args.old_string.length > 80) ||
+      (typeof args.new_string === "string" && args.new_string.length > 80))
+  ) {
+    printed = {
+      path: args.path,
+      old_string: truncatedField(args.old_string),
+      new_string: truncatedField(args.new_string),
     };
   }
   return `tool: ${name} ${JSON.stringify(printed)}\n`;
@@ -134,6 +151,9 @@ export async function runTurn(deps: RunTurnDeps): Promise<void> {
         throw err;
       }
       if (name === "write_file" && result.startsWith("Wrote ")) {
+        deps.output.write(`${result}\n`);
+      }
+      if (name === "str_replace" && result.startsWith("Replaced ")) {
         deps.output.write(`${result}\n`);
       }
       if (name === "run_command" && !result.startsWith("User denied command:")) {

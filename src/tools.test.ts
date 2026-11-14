@@ -34,10 +34,10 @@ function tool(name: string) {
 }
 
 describe("createTools", () => {
-  it("returns tools named list_dir, read_file, grep, write_file, and run_command", () => {
+  it("returns tools named list_dir, read_file, grep, write_file, str_replace, and run_command", () => {
     assert.deepEqual(
       createTools().map((entry) => entry.name),
-      ["list_dir", "read_file", "grep", "write_file", "run_command"],
+      ["list_dir", "read_file", "grep", "write_file", "str_replace", "run_command"],
     );
   });
 
@@ -434,6 +434,187 @@ describe("write_file", () => {
       );
       assert.equal(result, "Wrote 0 bytes to empty.txt");
       assert.equal(fs.readFileSync(path.join(root, "empty.txt"), "utf8"), "");
+    });
+  });
+});
+
+describe("str_replace", () => {
+  function replaceTool() {
+    return tool("str_replace");
+  }
+
+  it("confirm true replaces a unique substring", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.ts"), "const x = 1;\n");
+      const result = await replaceTool().execute(
+        {
+          path: "a.ts",
+          old_string: "const x = 1;",
+          new_string: "const x = 2;",
+        },
+        { workspaceRoot: root, confirm: async () => true },
+      );
+      assert.equal(result, "Replaced in a.ts");
+      assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "const x = 2;\n");
+    });
+  });
+
+  it("confirm false leaves the file unchanged", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.ts"), "const x = 1;\n");
+      const result = await replaceTool().execute(
+        {
+          path: "a.ts",
+          old_string: "const x = 1;",
+          new_string: "const x = 2;",
+        },
+        { workspaceRoot: root, confirm: async () => false },
+      );
+      assert.equal(result, "User denied replace in a.ts.");
+      assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "const x = 1;\n");
+    });
+  });
+
+  it("missing confirm is denied and does not write", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.ts"), "const x = 1;\n");
+      const result = await replaceTool().execute(
+        {
+          path: "a.ts",
+          old_string: "const x = 1;",
+          new_string: "const x = 2;",
+        },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "User denied replace in a.ts.");
+      assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "const x = 1;\n");
+    });
+  });
+
+  it("two matches do not confirm", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.ts"), "x x\n");
+      let called = 0;
+      const result = await replaceTool().execute(
+        { path: "a.ts", old_string: "x", new_string: "y" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /old_string matched 2 times/);
+      assert.equal(called, 0);
+      assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "x x\n");
+    });
+  });
+
+  it("zero matches do not confirm", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.ts"), "const x = 1;\n");
+      let called = 0;
+      const result = await replaceTool().execute(
+        { path: "a.ts", old_string: "nope", new_string: "y" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /old_string not found/);
+      assert.equal(called, 0);
+    });
+  });
+
+  it("empty old_string is invalid and does not confirm", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.ts"), "const x = 1;\n");
+      let called = 0;
+      const result = await replaceTool().execute(
+        { path: "a.ts", old_string: "", new_string: "y" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.equal(result, "Error: invalid arguments for str_replace");
+      assert.equal(called, 0);
+    });
+  });
+
+  it("missing file does not confirm", async () => {
+    await withTree(async (root) => {
+      let called = 0;
+      const result = await replaceTool().execute(
+        { path: "gone.ts", old_string: "a", new_string: "b" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /Error: not found:/);
+      assert.equal(called, 0);
+    });
+  });
+
+  it("directory path does not confirm", async () => {
+    await withTree(async (root) => {
+      fs.mkdirSync(path.join(root, "sub"));
+      let called = 0;
+      const result = await replaceTool().execute(
+        { path: "sub", old_string: "a", new_string: "b" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /Error: is a directory:/);
+      assert.equal(called, 0);
+    });
+  });
+
+  it("empty new_string removes the unique span", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.ts"), "keep DROP rest\n");
+      const result = await replaceTool().execute(
+        { path: "a.ts", old_string: "DROP ", new_string: "" },
+        { workspaceRoot: root, confirm: async () => true },
+      );
+      assert.equal(result, "Replaced in a.ts");
+      assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "keep rest\n");
+    });
+  });
+
+  it("escape path does not confirm", async () => {
+    await withTree(async (root, base) => {
+      fs.writeFileSync(path.join(base, "outside.ts"), "secret\n");
+      let called = 0;
+      const result = await replaceTool().execute(
+        { path: "../outside.ts", old_string: "secret", new_string: "nope" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /path escapes workspace/);
+      assert.equal(called, 0);
+      assert.equal(fs.readFileSync(path.join(base, "outside.ts"), "utf8"), "secret\n");
     });
   });
 });
