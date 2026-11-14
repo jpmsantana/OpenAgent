@@ -58,18 +58,49 @@ function hang(line?: string): Readable {
 
 async function waitFor(
   text: () => string,
-  pattern: string | RegExp,
+  pattern: string | RegExp | (() => boolean),
   ms = 2000,
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < ms) {
-    const snapshot = text();
-    if (typeof pattern === "string" ? snapshot.includes(pattern) : pattern.test(snapshot)) {
-      return;
+    if (typeof pattern === "function") {
+      if (pattern()) {
+        return;
+      }
+    } else {
+      const snapshot = text();
+      if (typeof pattern === "string" ? snapshot.includes(pattern) : pattern.test(snapshot)) {
+        return;
+      }
     }
     await new Promise((r) => setTimeout(r, 10));
   }
   throw new Error(`timeout waiting for ${String(pattern)}: ${text()}`);
+}
+
+function count(hay: string, needle: string): number {
+  return hay.split(needle).length - 1;
+}
+
+function toolThenText(
+  calls: Array<{ name: string; arguments: Record<string, unknown> }>,
+): ReplDeps["chatStream"] {
+  let n = 0;
+  return async function* () {
+    const i = n;
+    n += 1;
+    if (i % 2 === 0) {
+      const spec = calls[i / 2];
+      if (spec !== undefined) {
+        yield {
+          type: "tool_calls",
+          calls: [{ function: spec }],
+        };
+        return;
+      }
+    }
+    yield { type: "text", text: "done" };
+  };
 }
 
 describe("runRepl", { concurrency: 1 }, () => {
@@ -361,7 +392,7 @@ describe("runRepl", { concurrency: 1 }, () => {
     });
     try {
       stream.push("write a note\n");
-      await waitFor(text, "[y/N]");
+      await waitFor(text, "[y/N/a]");
       await new Promise((r) => setTimeout(r, 25));
       stream.push("y\n");
       stream.push(null);
@@ -370,7 +401,7 @@ describe("runRepl", { concurrency: 1 }, () => {
         fs.readFileSync(path.join(root, "note.txt"), "utf8"),
         "hello",
       );
-      assert.match(text(), /Allow write to note.txt \(5 bytes\)\? \[y\/N\]/);
+      assert.match(text(), /Allow write to note.txt \(5 bytes\)\? \[y\/N\/a\]/);
       assert.match(text(), /Wrote 5 bytes to note.txt/);
     } finally {
       stream.destroy();
@@ -413,12 +444,12 @@ describe("runRepl", { concurrency: 1 }, () => {
     });
     try {
       stream.push("run it\n");
-      await waitFor(text, "[y/N]");
+      await waitFor(text, "[y/N/a]");
       await new Promise((r) => setTimeout(r, 25));
       stream.push("y\n");
       await waitFor(text, /exit 0/);
       assert.ok(
-        text().includes(`Allow command ${JSON.stringify(argv)}? [y/N]`),
+        text().includes(`Allow command ${JSON.stringify(argv)}? [y/N/a]`),
       );
       assert.match(text(), /RAN_OK/);
       stream.push("/exit\n");
@@ -464,7 +495,7 @@ describe("runRepl", { concurrency: 1 }, () => {
     });
     try {
       stream.push("run it\n");
-      await waitFor(text, "[y/N]");
+      await waitFor(text, "[y/N/a]");
       await new Promise((r) => setTimeout(r, 25));
       stream.push("n\n");
       await waitFor(text, /denied/);
@@ -521,7 +552,7 @@ describe("runRepl", { concurrency: 1 }, () => {
       stream.push("y\n");
       stream.push("/exit\n");
       await done;
-      assert.match(text(), /Allow replace in a.ts\? \[y\/N\]/);
+      assert.match(text(), /Allow replace in a.ts\? \[y\/N\/a\]/);
       assert.match(text(), /Replaced in a.ts/);
       assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "const x = 2;\n");
     } finally {
@@ -623,7 +654,7 @@ describe("runRepl", { concurrency: 1 }, () => {
       stream.push("y\n");
       stream.push("/exit\n");
       await done;
-      assert.match(text(), /Allow delete a.txt\? \[y\/N\]/);
+      assert.match(text(), /Allow delete a.txt\? \[y\/N\/a\]/);
       assert.match(text(), /Deleted a.txt/);
       assert.equal(fs.existsSync(path.join(root, "a.txt")), false);
     } finally {
@@ -680,6 +711,345 @@ describe("runRepl", { concurrency: 1 }, () => {
     }
   });
 
+  it("y allows write once and prompts again", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-y-once-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "write_file", arguments: { path: "a.txt", content: "one" } },
+        { name: "write_file", arguments: { path: "a.txt", content: "two" } },
+      ]),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("first\n");
+      await waitFor(text, "Allow write to a.txt");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("y\n");
+      await waitFor(text, /Wrote /);
+      stream.push("second\n");
+      await waitFor(text, () => count(text(), "Allow write to a.txt") >= 2);
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("y\n");
+      stream.push("/exit\n");
+      await done;
+      assert.equal(count(text(), "Allow write to a.txt"), 2);
+      assert.equal(fs.readFileSync(path.join(root, "a.txt"), "utf8"), "two");
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a skips the next write on the same path", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-a-skip-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "write_file", arguments: { path: "a.txt", content: "one" } },
+        { name: "write_file", arguments: { path: "a.txt", content: "two" } },
+      ]),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("first\n");
+      await waitFor(text, "Allow write to a.txt");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("a\n");
+      await waitFor(text, /Wrote /);
+      stream.push("second\n");
+      await waitFor(text, () => count(text(), "Wrote ") >= 2);
+      stream.push("/exit\n");
+      await done;
+      assert.equal(count(text(), "Allow write to a.txt"), 1);
+      assert.equal(fs.readFileSync(path.join(root, "a.txt"), "utf8"), "two");
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a on a.txt still prompts write to b.txt", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-a-other-path-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "write_file", arguments: { path: "a.txt", content: "a" } },
+        { name: "write_file", arguments: { path: "b.txt", content: "b" } },
+      ]),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("first\n");
+      await waitFor(text, "Allow write to a.txt");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("a\n");
+      await waitFor(text, /Wrote /);
+      stream.push("second\n");
+      await waitFor(text, "Allow write to b.txt");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("y\n");
+      stream.push("/exit\n");
+      await done;
+      assert.match(text(), /Allow write to b.txt/);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a on write_file does not cover delete_file on the same path", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-a-other-tool-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "write_file", arguments: { path: "a.txt", content: "keep" } },
+        { name: "delete_file", arguments: { path: "a.txt" } },
+      ]),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("write\n");
+      await waitFor(text, "Allow write to a.txt");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("a\n");
+      await waitFor(text, /Wrote /);
+      stream.push("delete\n");
+      await waitFor(text, "Allow delete a.txt");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("n\n");
+      stream.push("/exit\n");
+      await done;
+      assert.match(text(), /Allow delete a.txt/);
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), true);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a on a command argv skips only that exact argv", { timeout: 5000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-a-argv-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const same = ["node", "-e", "process.stdout.write('SAME')"];
+    const other = ["node", "-e", "process.stdout.write('OTHER')"];
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "run_command", arguments: { argv: same } },
+        { name: "run_command", arguments: { argv: same } },
+        { name: "run_command", arguments: { argv: other } },
+      ]),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("first\n");
+      await waitFor(text, "Allow command ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("a\n");
+      await waitFor(text, /SAME/);
+      stream.push("again\n");
+      await waitFor(text, () => count(text(), "SAME") >= 2);
+      assert.equal(count(text(), "Allow command "), 1);
+      stream.push("other\n");
+      await waitFor(text, () => count(text(), "Allow command ") >= 2);
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("y\n");
+      await waitFor(text, /OTHER/);
+      stream.push("/exit\n");
+      await done;
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uppercase A denies and does not grant", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-A-deny-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "write_file", arguments: { path: "a.txt", content: "x" } },
+        { name: "write_file", arguments: { path: "a.txt", content: "y" } },
+      ]),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("first\n");
+      await waitFor(text, "Allow write to a.txt");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("A\n");
+      await waitFor(text, /denied/);
+      stream.push("second\n");
+      await waitFor(text, () => count(text(), "Allow write to a.txt") >= 2);
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("n\n");
+      stream.push("/exit\n");
+      await done;
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), false);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uppercase Y denies and does not grant", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-Y-deny-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "write_file", arguments: { path: "a.txt", content: "x" } },
+        { name: "write_file", arguments: { path: "a.txt", content: "y" } },
+      ]),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("first\n");
+      await waitFor(text, "Allow write to a.txt");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("Y\n");
+      await waitFor(text, /denied/);
+      stream.push("second\n");
+      await waitFor(text, () => count(text(), "Allow write to a.txt") >= 2);
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("n\n");
+      stream.push("/exit\n");
+      await done;
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), false);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("abort during prompt does not grant", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-abort-grant-"));
+    const stream = hang("write a note");
+    const { output, text } = collect();
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: (() => {
+        let n = 0;
+        return async function* () {
+          n += 1;
+          if (n === 1 || n === 2) {
+            yield {
+              type: "tool_calls",
+              calls: [
+                {
+                  function: {
+                    name: "write_file",
+                    arguments: { path: "a.txt", content: "x" },
+                  },
+                },
+              ],
+            };
+            return;
+          }
+          yield { type: "text", text: "done" };
+        };
+      })(),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      await waitFor(text, "Allow write to a.txt");
+      process.emit("SIGINT");
+      await waitFor(text, /cancelled/);
+      assert.equal(text().includes("denied"), false);
+      stream.push("again\n");
+      await waitFor(text, () => count(text(), "Allow write to a.txt") >= 2);
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("n\n");
+      stream.push("/exit\n");
+      await done;
+      assert.equal(fs.existsSync(path.join(root, "a.txt")), false);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/clear keeps session grants", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-clear-grant-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const argv = ["node", "-e", "process.stdout.write('RAN')"];
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "run_command", arguments: { argv } },
+        { name: "run_command", arguments: { argv } },
+      ]),
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("run\n");
+      await waitFor(text, "Allow command ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("a\n");
+      await waitFor(text, /RAN/);
+      stream.push("/clear\n");
+      await waitFor(text, "Conversation cleared.");
+      stream.push("run again\n");
+      await waitFor(text, () => count(text(), "RAN") >= 2);
+      stream.push("/exit\n");
+      await done;
+      assert.equal(count(text(), "Allow command "), 1);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("confirmWrite allows only trimmed lowercase y", async () => {
     async function ask(answer: string): Promise<{ allowed: boolean; stdout: string }> {
       const { output, text } = collect();
@@ -702,12 +1072,16 @@ describe("runRepl", { concurrency: 1 }, () => {
 
     const yes = await ask("y");
     assert.equal(yes.allowed, true);
-    assert.match(yes.stdout, /Allow write to a.txt \(5 bytes\)\? \[y\/N\]/);
+    assert.match(yes.stdout, /Allow write to a.txt \(5 bytes\)\? \[y\/N\/a\]/);
     assert.match(yes.stdout, /^ {2}hello$/m);
     assert.equal(yes.stdout.includes("denied"), false);
 
+    const paddedYes = await ask(" y ");
+    assert.equal(paddedYes.allowed, true);
+
     const padded = await ask(" Y ");
-    assert.equal(padded.allowed, true);
+    assert.equal(padded.allowed, false);
+    assert.match(padded.stdout, /denied/);
 
     const no = await ask("n");
     assert.equal(no.allowed, false);
@@ -743,7 +1117,7 @@ describe("runRepl", { concurrency: 1 }, () => {
 
     const yes = await ask("y");
     assert.equal(yes.allowed, true);
-    assert.match(yes.stdout, /Allow command \["npm","test"\]\? \[y\/N\]/);
+    assert.match(yes.stdout, /Allow command \["npm","test"\]\? \[y\/N\/a\]/);
     assert.equal(yes.stdout.includes("denied"), false);
 
     const no = await ask("n");
@@ -837,7 +1211,7 @@ describe("runRepl", { concurrency: 1 }, () => {
       (err: unknown) => err,
     );
     try {
-      await waitFor(text, "[y/N]");
+      await waitFor(text, "[y/N/a]");
       process.emit("SIGINT");
       await waitFor(text, /cancelled/);
       const raced = await Promise.race([
