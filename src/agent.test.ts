@@ -104,7 +104,7 @@ describe("runTurn", () => {
     assert.ok(tools);
     assert.deepEqual(
       tools.map((tool) => tool.function.name),
-      ["list_dir", "read_file", "grep", "write_file", "run_command"],
+      ["list_dir", "read_file", "grep", "write_file", "str_replace", "run_command"],
     );
   });
 
@@ -468,6 +468,46 @@ describe("runTurn", () => {
       );
       assert.equal(stdout.includes(content), false);
       assert.equal(fs.readFileSync(path.join(root, "big.txt"), "utf8"), content);
+    });
+  });
+
+  it("str_replace confirm true writes Replaced in to output", async () => {
+    await withTempWorkspace(async (root) => {
+      fs.writeFileSync(path.join(root, "a.ts"), "const x = 1;\n");
+      const { output, text } = collect();
+      const messages: ChatMessage[] = [{ role: "user", content: "edit" }];
+      const { chatStream } = scriptedChat([
+        [
+          {
+            type: "tool_calls",
+            calls: [
+              {
+                function: {
+                  name: "str_replace",
+                  arguments: {
+                    path: "a.ts",
+                    old_string: "const x = 1;",
+                    new_string: "const x = 2;",
+                  },
+                },
+              },
+            ],
+          },
+        ],
+        [{ type: "text", text: "ok" }],
+      ]);
+      await runTurn(
+        baseDeps({
+          messages,
+          tools: createTools(),
+          chatStream,
+          output,
+          workspaceRoot: root,
+          confirm: async () => true,
+        }),
+      );
+      assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "const x = 2;\n");
+      assert.match(text(), /Replaced in a.ts/);
     });
   });
 

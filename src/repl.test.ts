@@ -477,6 +477,112 @@ describe("runRepl", { concurrency: 1 }, () => {
     }
   });
 
+  it("REPL str_replace y edits the file", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-repl-"));
+    fs.writeFileSync(path.join(root, "a.ts"), "const x = 1;\n");
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    let round = 0;
+    const chatStream: ReplDeps["chatStream"] = async function* () {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "tool_calls",
+          calls: [
+            {
+              function: {
+                name: "str_replace",
+                arguments: {
+                  path: "a.ts",
+                  old_string: "const x = 1;",
+                  new_string: "const x = 2;",
+                },
+              },
+            },
+          ],
+        };
+        return;
+      }
+      yield { type: "text", text: "done" };
+    };
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream,
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("edit it\n");
+      await waitFor(text, "Allow replace in ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("y\n");
+      stream.push("/exit\n");
+      await done;
+      assert.match(text(), /Allow replace in a.ts\? \[y\/N\]/);
+      assert.match(text(), /Replaced in a.ts/);
+      assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "const x = 2;\n");
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("REPL str_replace n leaves the file unchanged", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-repl-n-"));
+    fs.writeFileSync(path.join(root, "a.ts"), "const x = 1;\n");
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    let round = 0;
+    const chatStream: ReplDeps["chatStream"] = async function* () {
+      round += 1;
+      if (round === 1) {
+        yield {
+          type: "tool_calls",
+          calls: [
+            {
+              function: {
+                name: "str_replace",
+                arguments: {
+                  path: "a.ts",
+                  old_string: "const x = 1;",
+                  new_string: "const x = 2;",
+                },
+              },
+            },
+          ],
+        };
+        return;
+      }
+      yield { type: "text", text: "done" };
+    };
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream,
+      workspaceRoot: root,
+      tools: createTools(),
+    });
+    try {
+      stream.push("edit it\n");
+      await waitFor(text, "Allow replace in ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("n\n");
+      await waitFor(text, /denied/);
+      stream.push("/exit\n");
+      await done;
+      assert.match(text(), /denied/);
+      assert.equal(fs.readFileSync(path.join(root, "a.ts"), "utf8"), "const x = 1;\n");
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("confirmWrite allows only trimmed lowercase y", async () => {
     async function ask(answer: string): Promise<{ allowed: boolean; stdout: string }> {
       const { output, text } = collect();

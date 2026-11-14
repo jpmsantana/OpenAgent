@@ -82,6 +82,28 @@ export async function confirmWrite(
   return askYesNo(rl, output, signal);
 }
 
+/** Ask y/N for a replace. Only trimmed lowercase `y` allows. Abort denies. */
+export async function confirmReplace(
+  rl: readline.Interface,
+  output: NodeJS.WritableStream,
+  info: ConfirmInfo,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signal?.aborted) {
+    return false;
+  }
+  if (info.path === undefined) {
+    return false;
+  }
+  output.write(`Allow replace in ${info.path}? [y/N]\n`);
+  if (info.preview !== "") {
+    for (const line of info.preview.split("\n")) {
+      output.write(`  ${line}\n`);
+    }
+  }
+  return askYesNo(rl, output, signal);
+}
+
 /** Ask y/N for a command. Only trimmed lowercase `y` allows. Abort denies. */
 export async function confirmCommand(
   rl: readline.Interface,
@@ -108,6 +130,9 @@ export async function confirm(
   }
   if (info.name === "run_command") {
     return confirmCommand(rl, output, info, signal);
+  }
+  if (info.name === "str_replace") {
+    return confirmReplace(rl, output, info, signal);
   }
   return false;
 }
