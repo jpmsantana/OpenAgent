@@ -14,6 +14,27 @@ function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "oa-exec-"));
 }
 
+function assertProcessDead(pid: number): void {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return;
+  }
+  // Linux Compose runs tests as PID 1, so a SIGKILL'd grandchild can linger
+  // as a zombie; kill(pid, 0) still succeeds on zombies.
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const state = stat.slice(stat.indexOf(")") + 2)[0];
+      assert.equal(state, "Z");
+      return;
+    } catch {
+      return;
+    }
+  }
+  assert.fail(`process ${pid} is still running`);
+}
+
 async function withTree(
   fn: (root: string, base: string) => Promise<void>,
 ): Promise<void> {
@@ -270,7 +291,7 @@ describe("runCommand", () => {
         });
         assert.equal(result.timedOut, true);
         const pid = Number(fs.readFileSync(path.join(root, "grandchild.pid"), "utf8"));
-        assert.throws(() => process.kill(pid, 0));
+        assertProcessDead(pid);
       });
     },
   );

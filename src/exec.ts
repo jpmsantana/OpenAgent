@@ -153,12 +153,14 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
     let settled = false;
 
     const spawned: { current?: ChildProcess } = {};
+    const spawnAbort = new AbortController();
     combined.addEventListener(
       "abort",
       () => {
         if (spawned.current !== undefined) {
           killChild(spawned.current);
         }
+        spawnAbort.abort();
       },
       { once: true },
     );
@@ -169,7 +171,7 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
       detached: true,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      signal: combined,
+      signal: spawnAbort.signal,
     });
     spawned.current = proc;
 
