@@ -323,6 +323,7 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
         quit,
         (info) =>
           confirm(rl, deps.output, info, chat.abort?.signal, allowlist),
+        allowlist,
       );
       if (open && !quitting) {
         rl.prompt();
@@ -344,6 +345,25 @@ function isAbortError(err: unknown): boolean {
   );
 }
 
+function writeAllows(
+  output: NodeJS.WritableStream,
+  allowlist: SessionAllowlist,
+): void {
+  const grants = allowlist.list();
+  if (grants.length === 0) {
+    output.write("No session allows.\n");
+    return;
+  }
+  output.write("Session allows:\n");
+  for (const grant of grants) {
+    if (grant.kind === "run_command") {
+      output.write(`  run_command ${JSON.stringify(grant.argv)}\n`);
+    } else {
+      output.write(`  ${grant.kind}  ${grant.path}\n`);
+    }
+  }
+}
+
 async function handleLine(
   deps: ReplDeps,
   line: string,
@@ -352,6 +372,7 @@ async function handleLine(
   chat: { abort?: AbortController },
   quit: () => void,
   confirm: (info: ConfirmInfo) => Promise<boolean>,
+  allowlist: SessionAllowlist,
 ): Promise<string | undefined> {
   const trimmed = line.trim();
   if (trimmed === "") {
@@ -367,6 +388,14 @@ async function handleLine(
       case "clear":
         messages.length = 0;
         deps.output.write("Conversation cleared.\n");
+        return currentModel;
+      case "allow":
+        if (command.clear) {
+          allowlist.clear();
+          deps.output.write("Session allows cleared.\n");
+        } else {
+          writeAllows(deps.output, allowlist);
+        }
         return currentModel;
       case "model":
         return handleModel(deps, currentModel, command.name);
