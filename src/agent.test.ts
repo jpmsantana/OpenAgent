@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import {
   AGENT_SYSTEM_PROMPT,
   MAX_TOOL_ROUNDS,
+  TOOL_RESULT_MAX_CHARS,
   runTurn,
   type RunTurnDeps,
 } from "./agent.ts";
@@ -223,6 +224,68 @@ describe("runTurn", () => {
     const toolMsg = messages.find((message) => message.role === "tool");
     assert.equal(toolMsg?.content, "Error: unknown tool: boom");
     assert.equal(calls.length, 2);
+  });
+
+  it("caps stored tool results at TOOL_RESULT_MAX_CHARS", async () => {
+    const { output } = collect();
+    const messages: ChatMessage[] = [{ role: "user", content: "go" }];
+    const blob = "x".repeat(TOOL_RESULT_MAX_CHARS + 50);
+    const { chatStream, calls } = scriptedChat([
+      [
+        {
+          type: "tool_calls",
+          calls: [{ function: { name: "blob", arguments: {} } }],
+        },
+      ],
+      [{ type: "text", text: "ok" }],
+    ]);
+    const tools: RunTurnDeps["tools"] = [
+      {
+        name: "blob",
+        description: "blob",
+        parameters: { type: "object", properties: {} },
+        execute: async () => blob,
+      },
+    ];
+    await runTurn(baseDeps({ messages, tools, chatStream, output }));
+    const marker = "\n[truncated]\n";
+    const stored = `${blob.slice(0, TOOL_RESULT_MAX_CHARS)}${marker}`;
+    const toolMsg = messages.find((message) => message.role === "tool");
+    assert.equal(toolMsg?.content.length, TOOL_RESULT_MAX_CHARS + marker.length);
+    assert.ok(toolMsg?.content.startsWith("x".repeat(32)));
+    assert.equal(toolMsg?.content.endsWith(marker), true);
+    assert.equal(toolMsg?.content, stored);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(
+      calls[1][1].messages.find((message) => message.role === "tool"),
+      toolMsg,
+    );
+  });
+
+  it("stores short tool results without truncation", async () => {
+    const { output } = collect();
+    const messages: ChatMessage[] = [{ role: "user", content: "go" }];
+    const { chatStream } = scriptedChat([
+      [
+        {
+          type: "tool_calls",
+          calls: [{ function: { name: "blob", arguments: {} } }],
+        },
+      ],
+      [{ type: "text", text: "ok" }],
+    ]);
+    const tools: RunTurnDeps["tools"] = [
+      {
+        name: "blob",
+        description: "blob",
+        parameters: { type: "object", properties: {} },
+        execute: async () => "hello",
+      },
+    ];
+    await runTurn(baseDeps({ messages, tools, chatStream, output }));
+    const toolMsg = messages.find((message) => message.role === "tool");
+    assert.equal(toolMsg?.content, "hello");
+    assert.equal(toolMsg?.content.includes("[truncated]"), false);
   });
 
   it("round cap: MAX_TOOL_ROUNDS list_dir chats then stop, no extra round", async () => {

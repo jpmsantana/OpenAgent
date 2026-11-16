@@ -6,6 +6,7 @@ export const AGENT_SYSTEM_PROMPT =
   "You are OpenAgent, a local coding assistant. The workspace is the current working directory. Use grep to find text; do not walk the tree with list_dir when a pattern search will do. Use read_file to inspect files; pass offset (1-based line) and limit to read a line window. Never guess file contents. Prefer str_replace to change an existing file; use write_file to create a new file or replace an entire file. Use delete_file to remove a file. Use run_command only to run programs such as tests, builds, and git. Pass argv as an array; there is no shell. You have no network tool. The user may type a at a permission prompt to allow that exact path or command for the rest of the session.";
 
 export const MAX_TOOL_ROUNDS = 16;
+export const TOOL_RESULT_MAX_CHARS = 32768;
 
 export type RunTurnDeps = {
   host: string;
@@ -147,9 +148,13 @@ export async function runTurn(deps: RunTurnDeps): Promise<void> {
       if (name === "run_command" && !result.startsWith("User denied command:")) {
         deps.output.write(`${result}\n`);
       }
+      const stored =
+        result.length > TOOL_RESULT_MAX_CHARS
+          ? `${result.slice(0, TOOL_RESULT_MAX_CHARS)}\n[truncated]\n`
+          : result;
       deps.messages.push({
         role: "tool",
-        content: result,
+        content: stored,
         tool_name: name,
       });
       deps.signal?.throwIfAborted();
