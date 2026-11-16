@@ -14,7 +14,7 @@ OpenAgent is an open-source agent that can browse the web, search, write program
 
 ## Status
 
-M1 local Ollama chat still works. M2 adds **workspace file tools** in the current working directory. M3 adds a gated **`run_command`** tool (argv, no shell). M4 adds **`grep`**, a line window on **`read_file`**, **`str_replace`**, and **`delete_file`**. M5 adds **session permissions**: prompts are `[y/N/a]`. Reads and grep run immediately. Each write, replace, delete, and command waits for approval. The goals above remain the product direction.
+M1 local Ollama chat still works. M2 adds **workspace file tools** in the current working directory. M3 adds a gated **`run_command`** tool (argv, no shell). M4 adds **`grep`**, a line window on **`read_file`**, **`str_replace`**, and **`delete_file`**. M5 adds **session permissions**: prompts are `[y/N/a]`. Reads and grep run immediately. Each write, replace, delete, and command waits for approval. M6 hardens that CLI (no new tools): `ollama.host` must be http(s), startup errors print `Error: …`, `run_command` gets an env allowlist and POSIX process-group kill, grep regexes time out, mutating tools refuse symlinks, and tool results sent back to the model are capped at 32768 characters. The goals above remain the product direction.
 
 What works now:
 
@@ -25,7 +25,9 @@ What works now:
 - Tools: `list_dir`, `read_file`, `grep`, `write_file`, `str_replace`, `delete_file`, `run_command` on the current working directory
 - `grep` and reads run immediately
 - `grep` skips `node_modules`, `.git`, and `dist`; caps at 50 matches
+- Pathological grep regexes return `Error: regex timed out` instead of freezing the CLI. Patterns longer than 512 characters are rejected
 - `read_file` may take `offset` (1-based line) and `limit`
+- Tool results sent back to the model are capped at 32768 characters (`[truncated]`). `read_file` on disk is still 256 KiB
 - Permission prompts are `[y/N/a]`
 - `y` allows that one action
 - `a` allows that **exact** write/replace/delete path or that **exact** command argv until the CLI exits
@@ -35,8 +37,11 @@ What works now:
 - Grants are not written to config and do not survive process exit
 - `str_replace` changes one unique literal substring
 - `delete_file` removes a file (not a directory)
+- `write_file`, `str_replace`, and `delete_file` refuse a symlink, including one that points at a file inside the workspace
 - `run_command` takes `argv` (an array). There is no shell (`no sh -c`, no pipes)
 - Commands time out after 30 seconds and capture at most 32 KiB of output
+- `run_command` children get a small env allowlist (`PATH`, locale, temp, `NODE_ENV`, Windows process keys). They do not inherit tokens, `NODE_OPTIONS`, or `OPENAGENT_*`
+- On POSIX, timeout / Ctrl-C / the output cap kill the process group (grandchildren). Windows kills only the direct child
 - Path-style programs must stay inside the workspace; bare names (`npm`, `node`, `git`) use PATH
 - Docker Compose so the CLI does not need a host Node install; the CLI process in Docker is not root
 
@@ -69,6 +74,8 @@ Search order:
 3. `~/.config/openagent/config.json`
 
 If no file exists, the host default is `http://127.0.0.1:11434`.
+
+`ollama.host` must be an `http://` or `https://` URL with no path, query, userinfo, or fragment. Invalid JSON, a rejected host, or `OPENAGENT_CONFIG` pointing at a missing file prints `Error: …` on stderr and exits 1.
 
 For a host Node run, copy `openagent.json.example` to `openagent.json` or to `~/.config/openagent/config.json`:
 
@@ -129,7 +136,7 @@ The Compose service is interactive (`stdin_open` / `tty`). Use `-T` only for non
 | --- | --- | --- |
 | `list_dir` | List a directory (not recursive) | auto |
 | `read_file` | Read a UTF-8 file (max 256 KiB; optional line window) | auto |
-| `grep` | Regex search (skips `node_modules`, `.git`, `dist`; max 50 hits) | auto |
+| `grep` | Regex search (skips `node_modules`, `.git`, `dist`; max 50 hits; overlong or pathological patterns error) | auto |
 | `write_file` | Create or overwrite a UTF-8 file | `y` once, or `a` for this session (exact path) |
 | `str_replace` | Replace one unique literal substring | `y` once, or `a` for this session (exact path) |
 | `delete_file` | Delete a file | `y` once, or `a` for this session (exact path) |
@@ -148,7 +155,7 @@ tool: read_file {"path":"src/repl.ts"}
 repl.ts is the readline loop: it loads models, streams chat, and dispatches slash commands...
 > find MAX_TOOL_ROUNDS
 tool: grep {"pattern":"MAX_TOOL_ROUNDS"}
-src/agent.ts:7:export const MAX_TOOL_ROUNDS = 16;
+src/agent.ts:8:export const MAX_TOOL_ROUNDS = 16;
 > change that constant using a replace
 tool: read_file {"path":"src/agent.ts","offset":6,"limit":3}
 tool: str_replace {"path":"src/agent.ts","old_string":"export const MAX_TOOL_ROUNDS = 8;","new_string":"export const MAX_TOOL_ROUNDS = 16;"}
