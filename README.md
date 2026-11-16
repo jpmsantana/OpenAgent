@@ -14,19 +14,25 @@ OpenAgent is an open-source agent that can browse the web, search, write program
 
 ## Status
 
-M1 local Ollama chat still works. M2 adds **workspace file tools** in the current working directory. M3 adds a gated **`run_command`** tool (argv, no shell). M4 adds **`grep`**, a line window on **`read_file`**, **`str_replace`**, and **`delete_file`**. Reads and grep run immediately. Each write, replace, delete, and command waits for `y/N`. The goals above remain the product direction.
+M1 local Ollama chat still works. M2 adds **workspace file tools** in the current working directory. M3 adds a gated **`run_command`** tool (argv, no shell). M4 adds **`grep`**, a line window on **`read_file`**, **`str_replace`**, and **`delete_file`**. M5 adds **session permissions**: prompts are `[y/N/a]`. Reads and grep run immediately. Each write, replace, delete, and command waits for approval. The goals above remain the product direction.
 
 What works now:
 
 - Interactive chat REPL against local Ollama
 - Config selects the Ollama host; models come from Ollama, not listed in the config file
-- `/model`, `/help`, `/clear`, `/exit`
+- `/model`, `/help`, `/clear`, `/allow`, `/allow clear`, `/exit`
 - Ctrl-C during a turn cancels (including a running command) and returns to the prompt; Ctrl-C on an empty prompt quits
 - Tools: `list_dir`, `read_file`, `grep`, `write_file`, `str_replace`, `delete_file`, `run_command` on the current working directory
 - `grep` and reads run immediately
 - `grep` skips `node_modules`, `.git`, and `dist`; caps at 50 matches
 - `read_file` may take `offset` (1-based line) and `limit`
-- `write_file`, `str_replace`, `delete_file`, and `run_command` require typing `y` (not `yes`)
+- Permission prompts are `[y/N/a]`
+- `y` allows that one action
+- `a` allows that **exact** write/replace/delete path or that **exact** command argv until the CLI exits
+- A different path, different tool, or different argv still prompts
+- `/allow` lists session grants; `/allow clear` drops them
+- `/clear` clears conversation history and does **not** drop grants
+- Grants are not written to config and do not survive process exit
 - `str_replace` changes one unique literal substring
 - `delete_file` removes a file (not a directory)
 - `run_command` takes `argv` (an array). There is no shell (`no sh -c`, no pipes)
@@ -40,7 +46,7 @@ What does not work yet:
 - Web navigation
 - Search
 - Providers other than Ollama
-- Session allowlists (`a` / `/allow`)
+- Saved allowlists in the config file
 
 ## Prerequisites
 
@@ -109,7 +115,9 @@ The Compose service is interactive (`stdin_open` / `tty`). Use `-T` only for non
 | Command | Action |
 | --- | --- |
 | `/help` | List commands |
-| `/clear` | Clear conversation history |
+| `/clear` | Clear conversation history (does not drop session grants) |
+| `/allow` | List session permission grants |
+| `/allow clear` | Drop all session permission grants |
 | `/model` | List models installed in Ollama |
 | `/model <name>` | Switch model for this session |
 | `/exit` | Quit |
@@ -122,10 +130,10 @@ The Compose service is interactive (`stdin_open` / `tty`). Use `-T` only for non
 | `list_dir` | List a directory (not recursive) | auto |
 | `read_file` | Read a UTF-8 file (max 256 KiB; optional line window) | auto |
 | `grep` | Regex search (skips `node_modules`, `.git`, `dist`; max 50 hits) | auto |
-| `write_file` | Create or overwrite a UTF-8 file | `y/N` each time |
-| `str_replace` | Replace one unique literal substring | `y/N` each time |
-| `delete_file` | Delete a file | `y/N` each time |
-| `run_command` | Run a program in cwd (`argv`, no shell) | `y/N` each time |
+| `write_file` | Create or overwrite a UTF-8 file | `y` once, or `a` for this session (exact path) |
+| `str_replace` | Replace one unique literal substring | `y` once, or `a` for this session (exact path) |
+| `delete_file` | Delete a file | `y` once, or `a` for this session (exact path) |
+| `run_command` | Run a program in cwd (`argv`, no shell) | `y` once, or `a` for this session (exact argv) |
 
 ## Example
 
@@ -144,7 +152,7 @@ src/agent.ts:7:export const MAX_TOOL_ROUNDS = 16;
 > change that constant using a replace
 tool: read_file {"path":"src/agent.ts","offset":6,"limit":3}
 tool: str_replace {"path":"src/agent.ts","old_string":"export const MAX_TOOL_ROUNDS = 8;","new_string":"export const MAX_TOOL_ROUNDS = 16;"}
-Allow replace in src/agent.ts? [y/N]
+Allow replace in src/agent.ts? [y/N/a]
   --- old ---
   export const MAX_TOOL_ROUNDS = 8;
   --- new ---
@@ -154,17 +162,28 @@ Replaced in src/agent.ts
 > add a one-line comment at the top of LICENSE
 tool: read_file {"path":"LICENSE"}
 tool: write_file {"path":"LICENSE"}
-Allow write to LICENSE (1085 bytes)? [y/N]
+Allow write to LICENSE (1085 bytes)? [y/N/a]
 y
 Wrote 1104 bytes to LICENSE
-> run node -e "console.log('hi')"
-tool: run_command {"argv":["node","-e","console.log('hi')"]}
-Allow command ["node","-e","console.log('hi')"]? [y/N]
-y
+> run the tests
+tool: run_command {"argv":["npm","test"]}
+Allow command ["npm","test"]? [y/N/a]
+a
 exit 0
 stdout:
-hi
+ok
 stderr:
+> run the tests again
+tool: run_command {"argv":["npm","test"]}
+exit 0
+stdout:
+ok
+stderr:
+> /allow
+Session allows:
+  run_command ["npm","test"]
+> /allow clear
+Session allows cleared.
 > /clear
 Conversation cleared.
 > /exit
@@ -173,7 +192,7 @@ Conversation cleared.
 A write you refuse:
 
 ```
-Allow write to LICENSE (1085 bytes)? [y/N]
+Allow write to LICENSE (1085 bytes)? [y/N/a]
 n
 denied
 ```
@@ -181,7 +200,7 @@ denied
 A command you refuse:
 
 ```
-Allow command ["npm","test"]? [y/N]
+Allow command ["npm","test"]? [y/N/a]
 n
 denied
 ```
@@ -189,7 +208,7 @@ denied
 A delete you refuse:
 
 ```
-Allow delete tmp.txt? [y/N]
+Allow delete tmp.txt? [y/N/a]
 n
 denied
 ```
