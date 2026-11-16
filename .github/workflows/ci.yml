@@ -44,6 +44,8 @@ jobs:
       - run: docker compose build
       - run: docker compose run --rm -T openagent npm run lint
       - run: docker compose run --rm -T openagent npm test
+      # Bind-mounted /app is owned by the runner; the Compose user is `node`.
+      - run: mkdir -p dist && chmod a+rwx dist
       - run: docker compose run --rm -T openagent npm run build
       - name: Run CLI help
         run: |
