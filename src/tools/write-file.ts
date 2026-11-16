@@ -8,6 +8,7 @@ import {
   isSymlinkOpenError,
   nonEmptyString,
   toolError,
+  unfollowedWorkspacePath,
   writePreview,
   type ToolContext,
 } from "./common.js";
@@ -26,15 +27,18 @@ export async function writeFile(
     return `Error: file too large: ${userPath}`;
   }
 
-  let resolved: string;
   try {
-    resolved = resolveWorkspacePath(ctx.workspaceRoot, userPath);
+    resolveWorkspacePath(ctx.workspaceRoot, userPath);
   } catch (err) {
     return toolError(err);
   }
 
+  const { rootReal, linkPath } = await unfollowedWorkspacePath(
+    ctx.workspaceRoot,
+    userPath,
+  );
   try {
-    const st = await fs.lstat(resolved);
+    const st = await fs.lstat(linkPath);
     if (st.isDirectory()) {
       return `Error: is a directory: ${userPath}`;
     }
@@ -47,8 +51,7 @@ export async function writeFile(
     }
   }
 
-  const rootReal = await fs.realpath(ctx.workspaceRoot);
-  const relPath = path.relative(rootReal, resolved) || ".";
+  const relPath = path.relative(rootReal, linkPath) || ".";
   if (ctx.confirm === undefined) {
     return `User denied write to ${relPath}.`;
   }
@@ -64,9 +67,9 @@ export async function writeFile(
   }
 
   try {
-    await fs.mkdir(path.dirname(resolved), { recursive: true });
+    await fs.mkdir(path.dirname(linkPath), { recursive: true });
     const handle = await fs.open(
-      resolved,
+      linkPath,
       fsConstants.O_WRONLY |
         fsConstants.O_CREAT |
         fsConstants.O_TRUNC |

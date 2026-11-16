@@ -1,3 +1,5 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { RunCommandOpts, RunCommandResult } from "../exec.js";
 import { ExecArgvError } from "../exec.js";
 import { WorkspacePathError } from "../workspace.js";
@@ -62,6 +64,15 @@ export function isEnoent(err: unknown): boolean {
 export function isSymlinkOpenError(err: unknown): boolean {
   const code = errCode(err);
   return code === "ELOOP" || code === "EMLINK";
+}
+
+export async function unfollowedWorkspacePath(
+  workspaceRoot: string,
+  userPath: string,
+): Promise<{ rootReal: string; linkPath: string }> {
+  const rootReal = await fs.realpath(workspaceRoot);
+  const linkPath = path.resolve(rootReal, userPath === "" ? "." : userPath);
+  return { rootReal, linkPath };
 }
 
 export function nonEmptyString(value: unknown): string | undefined {
