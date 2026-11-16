@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { isAbortOrTimeoutError } from "./abort.js";
 import { resolveWorkspacePath } from "./workspace.js";
@@ -27,6 +27,61 @@ export class ExecArgvError extends Error {
     super(message);
     this.name = "ExecArgvError";
   }
+}
+
+export const COMMAND_ENV_KEYS: readonly string[] = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LC_MESSAGES",
+  "TERM",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "TZ",
+  "NODE_ENV",
+  "PATHEXT",
+  "SystemRoot",
+  "SYSTEMROOT",
+  "windir",
+  "WINDIR",
+  "COMSPEC",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "ProgramFiles",
+  "PROGRAMFILES",
+  "ProgramData",
+  "PROGRAMDATA",
+];
+
+export function sanitizeCommandEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of COMMAND_ENV_KEYS) {
+    const value = source[key];
+    if (value !== undefined) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+function killChild(child: ChildProcess): void {
+  if (process.platform !== "win32" && typeof child.pid === "number") {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // ESRCH: already gone
+    }
+    return;
+  }
+  child.kill("SIGKILL");
 }
 
 function withTrailingNl(s: string): string {
@@ -91,19 +146,32 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
     opts.signal !== undefined ? AbortSignal.any([opts.signal, timeout]) : timeout;
 
   return await new Promise<RunCommandResult>((resolve, reject) => {
-    let outBuf = Buffer.alloc(0);
-    let errBuf = Buffer.alloc(0);
+    const outChunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
+    let size = 0;
     let truncated = false;
     let settled = false;
 
-    const child = spawn(program, opts.argv.slice(1), {
+    const spawned: { current?: ChildProcess } = {};
+    combined.addEventListener(
+      "abort",
+      () => {
+        if (spawned.current !== undefined) {
+          killChild(spawned.current);
+        }
+      },
+      { once: true },
+    );
+    const proc = spawn(program, opts.argv.slice(1), {
       cwd: opts.cwd,
-      env: opts.env ?? process.env,
+      env: sanitizeCommandEnv(opts.env ?? process.env),
       shell: false,
+      detached: true,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
       signal: combined,
     });
+    spawned.current = proc;
 
     const fail = (err: unknown): void => {
       if (settled) {
@@ -118,6 +186,10 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
         return;
       }
       settled = true;
+      const timedOut = timeout.aborted && !opts.signal?.aborted;
+      if (timedOut || opts.signal?.aborted) {
+        killChild(proc);
+      }
       if (opts.signal?.aborted) {
         const err = new Error("This operation was aborted");
         err.name = "AbortError";
@@ -126,9 +198,9 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
       }
       resolve({
         exitCode,
-        stdout: outBuf.toString("utf8"),
-        stderr: errBuf.toString("utf8"),
-        timedOut: timeout.aborted && !opts.signal?.aborted,
+        stdout: Buffer.concat(outChunks).toString("utf8"),
+        stderr: Buffer.concat(errChunks).toString("utf8"),
+        timedOut,
         truncated,
       });
     };
@@ -137,39 +209,42 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
       if (truncated || settled) {
         return;
       }
-      const total = outBuf.length + errBuf.length;
-      if (total + chunk.length > COMMAND_MAX_BYTES) {
-        const room = Math.max(0, COMMAND_MAX_BYTES - total);
+      if (size + chunk.length > COMMAND_MAX_BYTES) {
+        const room = Math.max(0, COMMAND_MAX_BYTES - size);
         const take = chunk.subarray(0, room);
-        if (which === "out") {
-          outBuf = Buffer.concat([outBuf, take]);
-        } else {
-          errBuf = Buffer.concat([errBuf, take]);
+        if (take.length > 0) {
+          if (which === "out") {
+            outChunks.push(take);
+          } else {
+            errChunks.push(take);
+          }
+          size += take.length;
         }
         truncated = true;
-        child.kill("SIGKILL");
+        killChild(proc);
         return;
       }
       if (which === "out") {
-        outBuf = Buffer.concat([outBuf, chunk]);
+        outChunks.push(chunk);
       } else {
-        errBuf = Buffer.concat([errBuf, chunk]);
+        errChunks.push(chunk);
       }
+      size += chunk.length;
     };
 
-    child.stdout?.on("data", (chunk: Buffer) => {
+    proc.stdout?.on("data", (chunk: Buffer) => {
       append("out", chunk);
     });
-    child.stderr?.on("data", (chunk: Buffer) => {
+    proc.stderr?.on("data", (chunk: Buffer) => {
       append("err", chunk);
     });
-    child.on("error", (err) => {
+    proc.on("error", (err) => {
       if (isAbortOrTimeoutError(err)) {
         return;
       }
       fail(err);
     });
-    child.on("close", (code, signal) => {
+    proc.on("close", (code, signal) => {
       finish(code === null && signal !== null ? null : code);
     });
   });

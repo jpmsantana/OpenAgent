@@ -197,4 +197,81 @@ describe("runCommand", () => {
       }
     });
   });
+
+  it("env allowlist drops secrets and NODE_OPTIONS", async () => {
+    await withTree(async (root) => {
+      const result = await runCommand({
+        argv: [
+          "node",
+          "-e",
+          "process.stdout.write(JSON.stringify(process.env))",
+        ],
+        cwd: root,
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          SECRET: "leak",
+          NODE_OPTIONS: "--require /nope.js",
+          OPENAGENT_CONFIG: "/tmp/x",
+          npm_config_token: "t",
+        },
+      });
+      assert.equal(result.exitCode, 0);
+      const env = JSON.parse(result.stdout) as Record<string, unknown>;
+      assert.equal("SECRET" in env, false);
+      assert.equal("NODE_OPTIONS" in env, false);
+      assert.equal("OPENAGENT_CONFIG" in env, false);
+      assert.equal("npm_config_token" in env, false);
+      assert.equal(typeof env.PATH, "string");
+    });
+  });
+
+  it("default env does not pass a planted secret", async () => {
+    await withTree(async (root) => {
+      const key = "OPENAGENT_TEST_SECRET";
+      const previous = process.env[key];
+      process.env[key] = "leak";
+      try {
+        const result = await runCommand({
+          argv: [
+            "node",
+            "-e",
+            `process.stdout.write(process.env.${key} ?? "")`,
+          ],
+          cwd: root,
+        });
+        assert.equal(result.stdout, "");
+      } finally {
+        if (previous === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = previous;
+        }
+      }
+    });
+  });
+
+  it(
+    "POSIX timeout kills the process group",
+    { skip: process.platform === "win32", timeout: 5000 },
+    async () => {
+      await withTree(async (root) => {
+        const script = [
+          "const { spawn } = require('node:child_process');",
+          "const fs = require('node:fs');",
+          "const g = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore', detached: false });",
+          "fs.writeFileSync('grandchild.pid', String(g.pid));",
+          "setInterval(() => {}, 1000);",
+        ].join("");
+        const result = await runCommand({
+          argv: ["node", "-e", script],
+          cwd: root,
+          timeoutMs: 300,
+        });
+        assert.equal(result.timedOut, true);
+        const pid = Number(fs.readFileSync(path.join(root, "grandchild.pid"), "utf8"));
+        assert.throws(() => process.kill(pid, 0));
+      });
+    },
+  );
 });
