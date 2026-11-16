@@ -8,7 +8,7 @@ import { describe, it } from "node:test";
 import { AGENT_SYSTEM_PROMPT } from "./agent.ts";
 import { OllamaError, type ChatMessage } from "./ollama.ts";
 import { confirmCommand, confirmWrite, runRepl, type ReplDeps } from "./repl.ts";
-import { createTools } from "./tools.ts";
+import { createTools, type Tool } from "./tools.ts";
 
 function collect(): { output: Writable; text: () => string } {
   let buf = "";
@@ -103,6 +103,39 @@ function toolThenText(
   };
 }
 
+function stubRunCommand(): Tool {
+  return {
+    name: "run_command",
+    description: "stub",
+    parameters: {
+      type: "object",
+      properties: {
+        argv: { type: "array", items: { type: "string" } },
+      },
+      required: ["argv"],
+    },
+    execute: async (args, ctx) => {
+      const argv = args.argv;
+      if (
+        !Array.isArray(argv) ||
+        argv.length === 0 ||
+        !argv.every((part) => typeof part === "string")
+      ) {
+        return "Error: invalid arguments for run_command";
+      }
+      const allowed = await ctx.confirm?.({
+        name: "run_command",
+        preview: JSON.stringify(argv),
+        argv,
+      });
+      if (!allowed) {
+        return `User denied command: ${JSON.stringify(argv)}`;
+      }
+      return "exit 0\nstdout:\nok\nstderr:\n";
+    },
+  };
+}
+
 describe("runRepl", { concurrency: 1 }, () => {
   it("streams chat chunks to stdout", async () => {
     const { stdout } = await run(["hello"]);
@@ -134,7 +167,14 @@ describe("runRepl", { concurrency: 1 }, () => {
     const { stdout, calls } = await run(["/help"]);
     assert.match(stdout, /Commands:/);
     assert.match(stdout, /\/clear/);
+    assert.match(stdout, /\/allow/);
     assert.match(stdout, /\/exit/);
+    assert.equal(calls.length, 0);
+  });
+
+  it("fresh REPL /allow prints No session allows", async () => {
+    const { stdout, calls } = await run(["/allow"]);
+    assert.match(stdout, /No session allows\./);
     assert.equal(calls.length, 0);
   });
 
@@ -1044,6 +1084,116 @@ describe("runRepl", { concurrency: 1 }, () => {
       stream.push("/exit\n");
       await done;
       assert.equal(count(text(), "Allow command "), 1);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/allow lists a granted run_command", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-allow-list-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const argv = ["npm", "test"];
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "run_command", arguments: { argv } },
+      ]),
+      workspaceRoot: root,
+      tools: [stubRunCommand()],
+    });
+    try {
+      stream.push("run tests\n");
+      await waitFor(text, "Allow command ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("a\n");
+      await waitFor(text, /exit 0/);
+      stream.push("/allow\n");
+      await waitFor(text, "Session allows:");
+      stream.push("/exit\n");
+      await done;
+      assert.match(text(), /Session allows:/);
+      assert.match(text(), /run_command \["npm","test"\]/);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/allow clear drops grants so the next command prompts", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-allow-clear-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const argv = ["npm", "test"];
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "run_command", arguments: { argv } },
+        { name: "run_command", arguments: { argv } },
+      ]),
+      workspaceRoot: root,
+      tools: [stubRunCommand()],
+    });
+    try {
+      stream.push("run tests\n");
+      await waitFor(text, "Allow command ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("a\n");
+      await waitFor(text, /exit 0/);
+      stream.push("/allow clear\n");
+      await waitFor(text, "Session allows cleared.");
+      stream.push("/allow\n");
+      await waitFor(text, "No session allows.");
+      stream.push("run again\n");
+      await waitFor(text, () => count(text(), "Allow command ") >= 2);
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("n\n");
+      stream.push("/exit\n");
+      await done;
+      assert.match(text(), /Session allows cleared\./);
+      assert.match(text(), /No session allows\./);
+    } finally {
+      stream.destroy();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("/clear keeps grants visible in /allow", { timeout: 3000 }, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "oa-repl-clear-allow-"));
+    const stream = new Readable({ read() {} });
+    const { output, text } = collect();
+    const argv = ["npm", "test"];
+    const done = runRepl({
+      input: stream,
+      output,
+      host: "http://127.0.0.1:11434",
+      listModels: async () => ["m"],
+      chatStream: toolThenText([
+        { name: "run_command", arguments: { argv } },
+      ]),
+      workspaceRoot: root,
+      tools: [stubRunCommand()],
+    });
+    try {
+      stream.push("run tests\n");
+      await waitFor(text, "Allow command ");
+      await new Promise((r) => setTimeout(r, 25));
+      stream.push("a\n");
+      await waitFor(text, /exit 0/);
+      stream.push("/clear\n");
+      await waitFor(text, "Conversation cleared.");
+      stream.push("/allow\n");
+      await waitFor(text, "Session allows:");
+      stream.push("/exit\n");
+      await done;
+      assert.match(text(), /run_command \["npm","test"\]/);
     } finally {
       stream.destroy();
       fs.rmSync(root, { recursive: true, force: true });
