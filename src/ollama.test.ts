@@ -43,6 +43,7 @@ async function withServer(
   try {
     await fn(`http://127.0.0.1:${address.port}`);
   } finally {
+    server.closeAllConnections();
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
@@ -97,6 +98,65 @@ describe("listModels", () => {
         assert.equal(err.status, 500);
         return true;
       });
+    });
+  });
+
+  it("skips model entries whose name is not a non-empty string", async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ models: [{ name: "a" }, { name: 1 }, {}] }));
+    }, async (host) => {
+      assert.deepEqual(await listModels(host), ["a"]);
+    });
+  });
+
+  it("idle timeout → OllamaError matching /timed out/", async () => {
+    await withServer((_req, _res) => {
+      // Accept the socket and never write a response.
+    }, async (host) => {
+      const started = Date.now();
+      await assert.rejects(
+        () => listModels(host, undefined, 50),
+        (err: unknown) => {
+          assert.ok(err instanceof OllamaError);
+          assert.match(err.message, /timed out/);
+          return true;
+        },
+      );
+      assert.ok(Date.now() - started < 2000);
+    });
+  });
+
+  it("headers then idle body → OllamaError matching /timed out/", async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+    }, async (host) => {
+      const started = Date.now();
+      await assert.rejects(
+        () => listModels(host, undefined, 50),
+        (err: unknown) => {
+          assert.ok(err instanceof OllamaError);
+          assert.match(err.message, /timed out/);
+          return true;
+        },
+      );
+      assert.ok(Date.now() - started < 2000);
+    });
+  });
+
+  it("caller AbortSignal.abort() is AbortError, not OllamaError", async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ models: [] }));
+    }, async (host) => {
+      await assert.rejects(
+        () => listModels(host, AbortSignal.abort()),
+        (err: unknown) => {
+          assert.equal((err as Error).name, "AbortError");
+          assert.equal(err instanceof OllamaError, false);
+          return true;
+        },
+      );
     });
   });
 });
@@ -271,6 +331,32 @@ describe("chatStream", () => {
         events.push(event);
       }
       assert.deepEqual(events, [{ type: "text", text: "Hi" }]);
+    });
+  });
+
+  it("idle stream after first chunk → OllamaError matching /timed out/", async () => {
+    await withServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      res.write('{"message":{"role":"assistant","content":"Hi"}}\n');
+    }, async (host) => {
+      const started = Date.now();
+      await assert.rejects(
+        async () => {
+          for await (const _ of chatStream(host, {
+            model: "m",
+            messages: [],
+            timeoutMs: 50,
+          })) {
+            // drain until timeout
+          }
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof OllamaError);
+          assert.match(err.message, /timed out/);
+          return true;
+        },
+      );
+      assert.ok(Date.now() - started < 2000);
     });
   });
 

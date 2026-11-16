@@ -40,7 +40,7 @@ function parseConfigFile(absPath: string): Config {
 
   const data = parsed as Record<string, unknown>;
   if (data.provider !== undefined && data.provider !== "ollama") {
-    throw new Error(`M1 only supports provider "ollama"`);
+    throw new Error(`Only provider "ollama" is supported`);
   }
 
   let host = DEFAULT_CONFIG.ollama.host;
@@ -57,13 +57,10 @@ function parseConfigFile(absPath: string): Config {
       host = ollama.host;
     }
   }
-  if (host.endsWith("/")) {
-    host = host.slice(0, -1);
-  }
 
   const config: Config = {
     provider: "ollama",
-    ollama: { host },
+    ollama: { host: normalizeOllamaHost(host, absPath) },
   };
   if (typeof data.model === "string" && data.model.length > 0) {
     config.model = data.model;
@@ -101,6 +98,34 @@ export function loadConfig(opts?: {
 
   return {
     provider: DEFAULT_CONFIG.provider,
-    ollama: { host: DEFAULT_CONFIG.ollama.host },
+    ollama: { host: normalizeOllamaHost(DEFAULT_CONFIG.ollama.host) },
   };
+}
+
+function invalidOllamaHost(source?: string): Error {
+  const message = "ollama.host must be an http(s) URL";
+  return new Error(source === undefined ? message : `${source}: ${message}`);
+}
+
+function normalizeOllamaHost(host: string, source?: string): string {
+  const trimmed = host.endsWith("/") ? host.slice(0, -1) : host;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw invalidOllamaHost(source);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw invalidOllamaHost(source);
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw invalidOllamaHost(source);
+  }
+  if (url.search !== "" || url.hash !== "") {
+    throw invalidOllamaHost(source);
+  }
+  if (url.pathname !== "" && url.pathname !== "/") {
+    throw invalidOllamaHost(source);
+  }
+  return `${url.protocol}//${url.host}`;
 }

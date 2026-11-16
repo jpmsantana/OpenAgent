@@ -59,6 +59,24 @@ describe("openagent CLI", () => {
       assert.equal(result.code, 1);
       assert.match(result.stderr, /Cannot reach Ollama/);
       assert.match(result.stderr, /ollama serve/);
+      assert.equal(result.stderr.includes("Error:"), false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("invalid JSON config prints Error: and the file path", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oa-cli-"));
+    const configPath = path.join(dir, "openagent.json");
+    fs.writeFileSync(configPath, "{");
+    try {
+      const result = await runCli([], { OPENAGENT_CONFIG: configPath });
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /Error:/);
+      assert.match(
+        result.stderr,
+        new RegExp(configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

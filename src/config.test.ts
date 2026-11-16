@@ -25,6 +25,23 @@ function withTemp(fn: (dirs: { cwd: string; home: string }) => void): void {
   }
 }
 
+function assertHostRejected(host: string): void {
+  withTemp(({ cwd, home }) => {
+    write(
+      path.join(cwd, "openagent.json"),
+      JSON.stringify({ ollama: { host } }),
+    );
+    assert.throws(
+      () => loadConfig({ env: {}, cwd, homedir: home }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /http\(s\) URL/);
+        return true;
+      },
+    );
+  });
+}
+
 describe("loadConfig", () => {
   it("no files → DEFAULT_CONFIG host", () => {
     withTemp(({ cwd, home }) => {
@@ -142,7 +159,7 @@ describe("loadConfig", () => {
     });
   });
 
-  it(`"provider": "openai" → throw includes M1 only supports provider "ollama"`, () => {
+  it(`"provider": "openai" → throw includes Only provider "ollama" is supported`, () => {
     withTemp(({ cwd, home }) => {
       write(
         path.join(cwd, "openagent.json"),
@@ -152,10 +169,41 @@ describe("loadConfig", () => {
         () => loadConfig({ env: {}, cwd, homedir: home }),
         (err: unknown) => {
           assert.ok(err instanceof Error);
-          assert.match(err.message, /M1 only supports provider "ollama"/);
+          assert.match(err.message, /Only provider "ollama" is supported/);
           return true;
         },
       );
+    });
+  });
+
+  it("file:// host is rejected", () => {
+    assertHostRejected("file:///tmp/x");
+  });
+
+  it("ftp:// host is rejected", () => {
+    assertHostRejected("ftp://127.0.0.1:11434");
+  });
+
+  it("host with a path is rejected", () => {
+    assertHostRejected("http://127.0.0.1:11434/api");
+  });
+
+  it("host with userinfo is rejected", () => {
+    assertHostRejected("http://user:pass@127.0.0.1:11434");
+  });
+
+  it("host with a query string is rejected", () => {
+    assertHostRejected("http://127.0.0.1:11434/?x=1");
+  });
+
+  it("IPv6 loopback host is kept", () => {
+    withTemp(({ cwd, home }) => {
+      write(
+        path.join(cwd, "openagent.json"),
+        JSON.stringify({ ollama: { host: "http://[::1]:11434" } }),
+      );
+      const config = loadConfig({ env: {}, cwd, homedir: home });
+      assert.equal(config.ollama.host, "http://[::1]:11434");
     });
   });
 
