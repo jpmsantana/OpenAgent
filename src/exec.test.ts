@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,12 +24,14 @@ function assertProcessDead(pid: number): void {
   // Linux Compose runs tests as PID 1, so a SIGKILL'd grandchild can linger
   // as a zombie; kill(pid, 0) still succeeds on zombies.
   if (process.platform === "linux") {
+    let state: string | undefined;
     try {
       const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-      const state = stat.slice(stat.indexOf(")") + 2)[0];
-      assert.equal(state, "Z");
-      return;
+      state = stat.slice(stat.indexOf(")") + 2)[0];
     } catch {
+      return;
+    }
+    if (state === "Z") {
       return;
     }
   }
@@ -293,6 +296,29 @@ describe("runCommand", () => {
         const pid = Number(fs.readFileSync(path.join(root, "grandchild.pid"), "utf8"));
         assertProcessDead(pid);
       });
+    },
+  );
+
+  it(
+    "a still-running pid fails the dead check",
+    { skip: process.platform === "win32", timeout: 5000 },
+    () => {
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+        detached: true,
+      });
+      assert.ok(typeof child.pid === "number");
+      const pid = child.pid;
+      try {
+        assert.throws(() => assertProcessDead(pid));
+      } finally {
+        try {
+          process.kill(-pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+        child.unref();
+      }
     },
   );
 });
