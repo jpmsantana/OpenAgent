@@ -1,4 +1,5 @@
 import readline from "node:readline";
+import { isAbortError } from "./abort.js";
 import { runTurn } from "./agent.js";
 import { HELP_TEXT, parseCommand } from "./commands.js";
 import {
@@ -334,15 +335,6 @@ export async function runRepl(deps: ReplDeps): Promise<void> {
     rl.removeListener("SIGINT", onSigint);
     rl.close();
   }
-}
-
-function isAbortError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    (err as { name: string }).name === "AbortError"
-  );
 }
 
 function writeAllows(
