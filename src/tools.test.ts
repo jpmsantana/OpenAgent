@@ -397,6 +397,29 @@ describe("write_file", () => {
     });
   });
 
+  it("in-workspace symlink is rejected and target is unchanged", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "target.txt"), "keep");
+      fs.symlinkSync(path.join(root, "target.txt"), path.join(root, "link.txt"));
+      let called = 0;
+      const writeFile = tool("write_file");
+      const result = await writeFile.execute(
+        { path: "link.txt", content: "pwn" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /path escapes workspace/);
+      assert.equal(called, 0);
+      assert.equal(fs.readFileSync(path.join(root, "target.txt"), "utf8"), "keep");
+      assert.equal(fs.lstatSync(path.join(root, "link.txt")).isSymbolicLink(), true);
+    });
+  });
+
   it("dangling symlink pointing outside does not write", async () => {
     await withTree(async (root, base) => {
       const outside = path.join(base, "secret");
@@ -450,6 +473,31 @@ describe("str_replace", () => {
   function replaceTool() {
     return tool("str_replace");
   }
+
+  it("in-workspace symlink is rejected and target is unchanged", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "target.txt"), "keep unique");
+      fs.symlinkSync(path.join(root, "target.txt"), path.join(root, "link.txt"));
+      let called = 0;
+      const result = await replaceTool().execute(
+        { path: "link.txt", old_string: "unique", new_string: "pwn" },
+        {
+          workspaceRoot: root,
+          confirm: async () => {
+            called += 1;
+            return true;
+          },
+        },
+      );
+      assert.match(result, /path escapes workspace/);
+      assert.equal(called, 0);
+      assert.equal(
+        fs.readFileSync(path.join(root, "target.txt"), "utf8"),
+        "keep unique",
+      );
+      assert.equal(fs.lstatSync(path.join(root, "link.txt")).isSymbolicLink(), true);
+    });
+  });
 
   it("confirm true replaces a unique substring", async () => {
     await withTree(async (root) => {

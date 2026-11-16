@@ -9,6 +9,7 @@ import {
   isSymlinkOpenError,
   nonEmptyString,
   toolError,
+  unfollowedWorkspacePath,
   writePreview,
   type ToolContext,
 } from "./common.js";
@@ -29,15 +30,18 @@ export async function strReplace(
   const oldString = args.old_string;
   const newString = args.new_string;
 
-  let resolved: string;
   try {
-    resolved = resolveWorkspacePath(ctx.workspaceRoot, userPath);
+    resolveWorkspacePath(ctx.workspaceRoot, userPath);
   } catch (err) {
     return toolError(err);
   }
 
+  const { rootReal, linkPath } = await unfollowedWorkspacePath(
+    ctx.workspaceRoot,
+    userPath,
+  );
   try {
-    const st = await fs.lstat(resolved);
+    const st = await fs.lstat(linkPath);
     if (st.isDirectory()) {
       return `Error: is a directory: ${userPath}`;
     }
@@ -56,7 +60,7 @@ export async function strReplace(
 
   let text: string;
   try {
-    const buf = await fs.readFile(resolved);
+    const buf = await fs.readFile(linkPath);
     if (buf.includes(0)) {
       return `Error: binary file: ${userPath}`;
     }
@@ -81,8 +85,7 @@ export async function strReplace(
     return `Error: file too large: ${userPath}`;
   }
 
-  const rootReal = await fs.realpath(ctx.workspaceRoot);
-  const relPath = path.relative(rootReal, resolved) || ".";
+  const relPath = path.relative(rootReal, linkPath) || ".";
   if (ctx.confirm === undefined) {
     return `User denied replace in ${relPath}.`;
   }
@@ -100,7 +103,7 @@ export async function strReplace(
 
   try {
     const handle = await fs.open(
-      resolved,
+      linkPath,
       fsConstants.O_WRONLY |
         fsConstants.O_CREAT |
         fsConstants.O_TRUNC |

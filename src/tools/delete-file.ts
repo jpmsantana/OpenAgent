@@ -7,6 +7,7 @@ import {
   isSymlinkOpenError,
   nonEmptyString,
   toolError,
+  unfollowedWorkspacePath,
   type ToolContext,
 } from "./common.js";
 
@@ -19,17 +20,18 @@ export async function deleteFile(
     return "Error: invalid arguments for delete_file";
   }
 
-  let resolved: string;
   try {
-    resolved = resolveWorkspacePath(ctx.workspaceRoot, userPath);
+    resolveWorkspacePath(ctx.workspaceRoot, userPath);
   } catch (err) {
     return toolError(err);
   }
 
-  const rootReal = await fs.realpath(ctx.workspaceRoot);
-  const checkPath = path.resolve(rootReal, userPath);
+  const { rootReal, linkPath } = await unfollowedWorkspacePath(
+    ctx.workspaceRoot,
+    userPath,
+  );
   try {
-    const st = await fs.lstat(checkPath);
+    const st = await fs.lstat(linkPath);
     if (st.isDirectory()) {
       return `Error: is a directory: ${userPath}`;
     }
@@ -43,7 +45,7 @@ export async function deleteFile(
     return toolError(err);
   }
 
-  const relPath = path.relative(rootReal, resolved) || ".";
+  const relPath = path.relative(rootReal, linkPath) || ".";
   if (ctx.confirm === undefined) {
     return `User denied delete of ${relPath}.`;
   }
@@ -57,7 +59,7 @@ export async function deleteFile(
   }
 
   try {
-    await fs.unlink(resolved);
+    await fs.unlink(linkPath);
   } catch (err) {
     if (isAbortError(err)) {
       throw err;
