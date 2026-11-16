@@ -1117,6 +1117,29 @@ describe("grep", () => {
     });
   });
 
+  it("pattern longer than 512 characters is rejected", async () => {
+    await withTree(async (root) => {
+      const result = await grepTool().execute(
+        { pattern: "a".repeat(513) },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "Error: pattern too long");
+    });
+  });
+
+  it("ReDoS pattern returns Error: regex timed out", async () => {
+    await withTree(async (root) => {
+      fs.writeFileSync(path.join(root, "a.txt"), `${"a".repeat(30)}b\n`);
+      const started = Date.now();
+      const result = await grepTool().execute(
+        { pattern: "(a+)+$" },
+        { workspaceRoot: root },
+      );
+      assert.equal(result, "Error: regex timed out");
+      assert.ok(Date.now() - started < 2000);
+    });
+  });
+
   it("already-aborted signal rejects with AbortError", async () => {
     await withTree(async (root) => {
       const abort = new AbortController();
