@@ -49,17 +49,40 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export const OLLAMA_TIMEOUT_MS = 60_000;
+
+function rethrowIfTimedOutOrAborted(
+  err: unknown,
+  host: string,
+  timeout: AbortSignal,
+  caller?: AbortSignal,
+): void {
+  if (caller?.aborted) {
+    caller.throwIfAborted();
+    throw err;
+  }
+  if (timeout.aborted) {
+    throw new OllamaError(`Ollama at ${host} timed out`, { cause: err });
+  }
+  if (isAbortError(err)) {
+    throw err;
+  }
+}
+
 async function ollamaFetch(
   host: string,
   url: string,
   init: RequestInit,
-): Promise<Response> {
+  timeoutMs: number,
+  caller?: AbortSignal,
+): Promise<{ response: Response; timeout: AbortSignal }> {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = caller ? AbortSignal.any([timeout, caller]) : timeout;
   try {
-    return await fetch(url, init);
+    const response = await fetch(url, { ...init, signal });
+    return { response, timeout };
   } catch (err) {
-    if (isAbortError(err)) {
-      throw err;
-    }
+    rethrowIfTimedOutOrAborted(err, host, timeout, caller);
     throw new OllamaError(`Cannot reach Ollama at ${host}`, { cause: err });
   }
 }
@@ -140,10 +163,15 @@ function eventsFromParsed(parsed: unknown): ChatEvent[] {
 export async function listModels(
   host: string,
   signal?: AbortSignal,
+  timeoutMs: number = OLLAMA_TIMEOUT_MS,
 ): Promise<string[]> {
-  const response = await ollamaFetch(host, `${trimSlash(host)}/api/tags`, {
+  const { response, timeout } = await ollamaFetch(
+    host,
+    `${trimSlash(host)}/api/tags`,
+    {},
+    timeoutMs,
     signal,
-  });
+  );
   if (!response.ok) {
     throw new OllamaError(`Ollama at ${host} returned ${response.status}`, {
       status: response.status,
@@ -154,6 +182,7 @@ export async function listModels(
   try {
     data = await response.json();
   } catch (err) {
+    rethrowIfTimedOutOrAborted(err, host, timeout, signal);
     throw new OllamaError(`Malformed Ollama response from ${host}`, {
       cause: err,
     });
@@ -167,7 +196,16 @@ export async function listModels(
     throw new OllamaError(`Malformed Ollama response from ${host}`);
   }
 
-  return (data as { models: { name: string }[] }).models.map((model) => model.name);
+  const names: string[] = [];
+  for (const model of (data as { models: unknown[] }).models) {
+    if (!isPlainObject(model)) {
+      continue;
+    }
+    if (typeof model.name === "string" && model.name.length > 0) {
+      names.push(model.name);
+    }
+  }
+  return names;
 }
 
 export async function* chatStream(
@@ -177,6 +215,7 @@ export async function* chatStream(
     messages: ChatMessage[];
     tools?: OllamaTool[];
     signal?: AbortSignal;
+    timeoutMs?: number;
   },
 ): AsyncGenerator<ChatEvent, void, void> {
   const body: Record<string, unknown> = {
@@ -188,12 +227,17 @@ export async function* chatStream(
     body.tools = args.tools;
   }
 
-  const response = await ollamaFetch(host, `${trimSlash(host)}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: args.signal,
-  });
+  const { response, timeout } = await ollamaFetch(
+    host,
+    `${trimSlash(host)}/api/chat`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    args.timeoutMs ?? OLLAMA_TIMEOUT_MS,
+    args.signal,
+  );
 
   if (!response.ok) {
     const text = await response.text();
@@ -233,6 +277,9 @@ export async function* chatStream(
         newline = buffer.indexOf("\n");
       }
     }
+  } catch (err) {
+    rethrowIfTimedOutOrAborted(err, host, timeout, args.signal);
+    throw err;
   } finally {
     reader.releaseLock();
   }

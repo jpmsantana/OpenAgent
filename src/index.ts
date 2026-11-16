@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { loadConfig } from "./config.js";
-import { chatStream, listModels } from "./ollama.js";
+import { chatStream, listModels, OllamaError } from "./ollama.js";
 import { runRepl } from "./repl.js";
 import { createTools } from "./tools.js";
 
@@ -33,7 +33,11 @@ export async function main(argv: string[]): Promise<number> {
       tools: createTools(),
     });
     return 0;
-  } catch {
+  } catch (err) {
+    if (!(err instanceof OllamaError)) {
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`Error: ${message}\n`);
+    }
     return 1;
   }
 }
