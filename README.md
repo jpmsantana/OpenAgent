@@ -155,7 +155,7 @@ tool: read_file {"path":"src/repl.ts"}
 repl.ts is the readline loop: it loads models, streams chat, and dispatches slash commands...
 > find MAX_TOOL_ROUNDS
 tool: grep {"pattern":"MAX_TOOL_ROUNDS"}
-src/agent.ts:7:export const MAX_TOOL_ROUNDS = 16;
+src/agent.ts:8:export const MAX_TOOL_ROUNDS = 16;
 > change that constant using a replace
 tool: read_file {"path":"src/agent.ts","offset":6,"limit":3}
 tool: str_replace {"path":"src/agent.ts","old_string":"export const MAX_TOOL_ROUNDS = 8;","new_string":"export const MAX_TOOL_ROUNDS = 16;"}
