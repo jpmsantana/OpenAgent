@@ -154,16 +154,16 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
 
     const spawned: { current?: ChildProcess } = {};
     const spawnAbort = new AbortController();
-    combined.addEventListener(
-      "abort",
-      () => {
-        if (spawned.current !== undefined) {
-          killChild(spawned.current);
-        }
-        spawnAbort.abort();
-      },
-      { once: true },
-    );
+    const onAbort = (): void => {
+      if (settled) {
+        return;
+      }
+      if (spawned.current !== undefined) {
+        killChild(spawned.current);
+      }
+      spawnAbort.abort();
+    };
+    combined.addEventListener("abort", onAbort, { once: true });
     const proc = spawn(program, opts.argv.slice(1), {
       cwd: opts.cwd,
       env: sanitizeCommandEnv(opts.env ?? process.env),
@@ -175,11 +175,16 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
     });
     spawned.current = proc;
 
+    const settle = (): void => {
+      settled = true;
+      combined.removeEventListener("abort", onAbort);
+    };
+
     const fail = (err: unknown): void => {
       if (settled) {
         return;
       }
-      settled = true;
+      settle();
       reject(err);
     };
 
@@ -187,7 +192,7 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
       if (settled) {
         return;
       }
-      settled = true;
+      settle();
       const timedOut = timeout.aborted && !opts.signal?.aborted;
       if (timedOut || opts.signal?.aborted) {
         killChild(proc);
