@@ -1,3 +1,5 @@
+import { isAbortError } from "./abort.js";
+
 export type ToolCall = {
   function: {
     name: string;
@@ -41,15 +43,6 @@ export class OllamaError extends Error {
 
 function trimSlash(host: string): string {
   return host.endsWith("/") ? host.slice(0, -1) : host;
-}
-
-function isAbortError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    (err as { name: string }).name === "AbortError"
-  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

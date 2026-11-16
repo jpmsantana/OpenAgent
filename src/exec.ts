@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { isAbortOrTimeoutError } from "./abort.js";
 import { resolveWorkspacePath } from "./workspace.js";
 
 export const COMMAND_TIMEOUT_MS = 30_000;
@@ -73,13 +74,6 @@ function resolveProgram(cwd: string, program: string): string {
     return resolveWorkspacePath(cwd, program);
   }
   return program;
-}
-
-function isAbortError(err: unknown): boolean {
-  return (
-    err instanceof Error &&
-    (err.name === "AbortError" || err.name === "TimeoutError")
-  );
 }
 
 export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult> {
@@ -170,7 +164,7 @@ export async function runCommand(opts: RunCommandOpts): Promise<RunCommandResult
       append("err", chunk);
     });
     child.on("error", (err) => {
-      if (isAbortError(err)) {
+      if (isAbortOrTimeoutError(err)) {
         return;
       }
       fail(err);

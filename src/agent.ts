@@ -1,3 +1,4 @@
+import { rethrowIfAbort } from "./abort.js";
 import type { ChatMessage, OllamaTool, ToolCall } from "./ollama.js";
 import type { Tool, ToolContext } from "./tools.js";
 
@@ -17,22 +18,6 @@ export type RunTurnDeps = {
   signal?: AbortSignal;
   confirm?: ToolContext["confirm"];
 };
-
-function isAbortError(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "name" in err &&
-    (err as { name: string }).name === "AbortError"
-  );
-}
-
-function rethrowIfAbort(err: unknown, signal?: AbortSignal): void {
-  if (isAbortError(err)) {
-    throw err;
-  }
-  signal?.throwIfAborted();
-}
 
 function truncatedField(value: unknown): unknown {
   if (typeof value === "string" && value.length > 80) {
