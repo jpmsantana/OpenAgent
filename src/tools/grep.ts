@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isAbortError } from "../abort.js";
+import {
+  GREP_MAX_PATTERN_CHARS,
+  createRegexTester,
+} from "../regex.js";
 import { resolveWorkspacePath } from "../workspace.js";
 import {
   GREP_MAX_FILES,
@@ -22,7 +26,7 @@ type GrepMatch = {
 };
 
 type GrepState = {
-  regex: RegExp;
+  tester: (text: string) => boolean | "timeout";
   rootReal: string;
   signal?: AbortSignal;
   matches: GrepMatch[];
@@ -50,7 +54,10 @@ function formatGrepResult(state: GrepState): string {
   return body;
 }
 
-async function grepFile(filePath: string, state: GrepState): Promise<void> {
+async function grepFile(
+  filePath: string,
+  state: GrepState,
+): Promise<string | undefined> {
   state.signal?.throwIfAborted();
   if (state.truncated) {
     return;
@@ -71,7 +78,11 @@ async function grepFile(filePath: string, state: GrepState): Promise<void> {
   const relPath = path.relative(state.rootReal, filePath) || ".";
   const lines = splitLines(buf.toString("utf8"));
   for (let i = 0; i < lines.length; i++) {
-    if (state.regex.test(lines[i])) {
+    const hit = state.tester(lines[i]);
+    if (hit === "timeout") {
+      return "Error: regex timed out";
+    }
+    if (hit === true) {
       if (state.matches.length >= GREP_MAX_MATCHES) {
         state.truncated = true;
         return;
@@ -83,9 +94,13 @@ async function grepFile(filePath: string, state: GrepState): Promise<void> {
       });
     }
   }
+  return undefined;
 }
 
-async function walkGrepDir(dirPath: string, state: GrepState): Promise<void> {
+async function walkGrepDir(
+  dirPath: string,
+  state: GrepState,
+): Promise<string | undefined> {
   if (state.truncated) {
     return;
   }
@@ -108,11 +123,18 @@ async function walkGrepDir(dirPath: string, state: GrepState): Promise<void> {
       if (GREP_SKIP_DIR_NAMES.has(ent.name)) {
         continue;
       }
-      await walkGrepDir(full, state);
+      const nested = await walkGrepDir(full, state);
+      if (nested !== undefined) {
+        return nested;
+      }
     } else if (ent.isFile()) {
-      await grepFile(full, state);
+      const timedOut = await grepFile(full, state);
+      if (timedOut !== undefined) {
+        return timedOut;
+      }
     }
   }
+  return undefined;
 }
 
 export async function grep(
@@ -132,8 +154,12 @@ export async function grep(
   ) {
     return "Error: invalid arguments for grep";
   }
+  if (pattern.length > GREP_MAX_PATTERN_CHARS) {
+    return "Error: pattern too long";
+  }
   const userPath = nonEmptyString(args.path) ?? ".";
   const caseInsensitive = args.case_insensitive === true;
+  const flags = caseInsensitive ? "i" : "";
 
   try {
     ctx.signal?.throwIfAborted();
@@ -151,26 +177,27 @@ export async function grep(
       return `Error: not a file or directory: ${userPath}`;
     }
 
-    let regex: RegExp;
     try {
-      regex = new RegExp(pattern, caseInsensitive ? "i" : "");
+      new RegExp(pattern, flags);
     } catch {
       return "Error: invalid regex";
     }
+    const tester = createRegexTester(pattern, flags);
 
     const rootReal = await fs.realpath(ctx.workspaceRoot);
     const state: GrepState = {
-      regex,
+      tester,
       rootReal,
       signal: ctx.signal,
       matches: [],
       filesOpened: 0,
       truncated: false,
     };
-    if (st.isFile()) {
-      await grepFile(resolved, state);
-    } else {
-      await walkGrepDir(resolved, state);
+    const timedOut = st.isFile()
+      ? await grepFile(resolved, state)
+      : await walkGrepDir(resolved, state);
+    if (timedOut !== undefined) {
+      return timedOut;
     }
     return formatGrepResult(state);
   } catch (err) {
